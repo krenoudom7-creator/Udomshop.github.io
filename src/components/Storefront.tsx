@@ -20,6 +20,12 @@ import type {
   StoreSettings,
 } from '../types/shop.ts';
 import { getCategoryLabel, formatMoney } from '../utils/format.ts';
+import { apiUrl, safeReadJson } from '../utils/api.ts';
+import {
+  HERO_COLLECTION_IMAGE,
+  STATIC_FALLBACK_PRODUCTS,
+  STATIC_FALLBACK_SETTINGS,
+} from '../utils/bundledAssets.ts';
 import { SafeImage } from './SafeImage.tsx';
 import { ProductDetailModal } from './ProductDetailModal.tsx';
 import { CartCheckoutDrawer } from './CartCheckoutDrawer.tsx';
@@ -29,7 +35,7 @@ interface StorefrontProps {
   onNavigateAdmin: () => void;
 }
 
-const HERO_IMAGE = '/src/assets/images/hero_oudom_collection_1794578200596.jpg';
+const HERO_IMAGE = HERO_COLLECTION_IMAGE;
 
 const DEFAULT_CATEGORIES: Category[] = [
   { id: 'cat_shoes', slug: 'shoes', nameKm: 'ស្បែកជើង', nameEn: 'Shoes', sortOrder: 1, createdAt: '', updatedAt: '' },
@@ -47,6 +53,7 @@ export function Storefront({ onNavigateAdmin }: StorefrontProps) {
   const [categories, setCategories] = useState<Category[]>(DEFAULT_CATEGORIES);
   const [settings, setSettings] = useState<StoreSettings | null>(null);
   const [announcementDismissed, setAnnouncementDismissed] = useState(false);
+  const [staticPreviewMode, setStaticPreviewMode] = useState(false);
 
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
@@ -83,20 +90,25 @@ export function Storefront({ onNavigateAdmin }: StorefrontProps) {
   const loadStoreData = async () => {
     setLoading(true);
     setLoadError('');
+    setStaticPreviewMode(false);
     try {
       const [cfgRes, prodRes] = await Promise.all([
-        fetch('/api/config/public'),
-        fetch('/api/products'),
+        fetch(apiUrl('/api/config/public')),
+        fetch(apiUrl('/api/products')),
       ]);
-      if (cfgRes.ok) {
-        const cfg = (await cfgRes.json()) as {
-          khrRate?: number;
-          freeShippingThresholdUsd?: number;
-          phnomPenhShippingUsd?: number;
-          provinceShippingUsd?: number;
-          categories?: Category[];
-          settings?: StoreSettings;
-        };
+
+      const cfg = cfgRes.ok
+        ? await safeReadJson<{
+            khrRate?: number;
+            freeShippingThresholdUsd?: number;
+            phnomPenhShippingUsd?: number;
+            provinceShippingUsd?: number;
+            categories?: Category[];
+            settings?: StoreSettings;
+          }>(cfgRes)
+        : null;
+
+      if (cfg) {
         if (cfg.khrRate) setKhrRate(cfg.khrRate);
         if (cfg.freeShippingThresholdUsd !== undefined) {
           setFreeShippingThresholdUsd(cfg.freeShippingThresholdUsd);
@@ -114,14 +126,25 @@ export function Storefront({ onNavigateAdmin }: StorefrontProps) {
           setSettings(cfg.settings);
         }
       }
-      const prodData = (await prodRes.json()) as { products?: Product[]; error?: string };
+
+      const prodData = await safeReadJson<{ products?: Product[]; error?: string }>(prodRes);
+      if (!prodData) {
+        // Static hosting fallback (e.g. GitHub Pages without Node.js API server)
+        setStaticPreviewMode(true);
+        setSettings(STATIC_FALLBACK_SETTINGS);
+        setProducts(STATIC_FALLBACK_PRODUCTS);
+        return;
+      }
+
       if (!prodRes.ok) {
         setLoadError(prodData.error || 'មិនអាចទាញយកបញ្ជីផលិតផលបានទេ');
       } else {
         setProducts(prodData.products || []);
       }
     } catch {
-      setLoadError('មានបញ្ហាក្នុងការភ្ជាប់ទៅប្រព័ន្ធ Server។ សូមព្យាយាមម្តងទៀត។');
+      setStaticPreviewMode(true);
+      setSettings(STATIC_FALLBACK_SETTINGS);
+      setProducts(STATIC_FALLBACK_PRODUCTS);
     } finally {
       setLoading(false);
     }
@@ -276,6 +299,12 @@ export function Storefront({ onNavigateAdmin }: StorefrontProps) {
           >
             <X className="h-3.5 w-3.5" />
           </button>
+        </div>
+      )}
+
+      {staticPreviewMode && (
+        <div className="border-b border-[#C9A227]/30 bg-[#FFF9E6] px-4 py-2 text-center text-xs text-[#5E4706] print:hidden">
+          កំពុងបង្ហាញជាទម្រង់ Static Preview (GitHub Pages)។ ដើម្បីប្រើការបញ្ជាទិញផ្ទាល់ ABA PayWay QR និង Admin Dashboard សូមបើកតាម Node.js Server។
         </div>
       )}
 

@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ShoppingBag } from 'lucide-react';
+import { resolveAssetUrl } from '../utils/bundledAssets.ts';
 
 interface SafeImageProps {
   src: string;
@@ -9,9 +10,14 @@ interface SafeImageProps {
 }
 
 export function SafeImage({ src, alt, className = '', priority = false }: SafeImageProps) {
+  const resolvedSrc = resolveAssetUrl(src);
   const [failed, setFailed] = useState(false);
 
-  if (!src || failed) {
+  useEffect(() => {
+    setFailed(false);
+  }, [resolvedSrc]);
+
+  if (!resolvedSrc || failed) {
     return (
       <div
         className={`flex flex-col items-center justify-center bg-gradient-to-br from-[#F2EFE9] to-[#E5E0D5] text-[#6B6559] ${className}`}
@@ -28,7 +34,7 @@ export function SafeImage({ src, alt, className = '', priority = false }: SafeIm
 
   return (
     <img
-      src={src}
+      src={resolvedSrc}
       alt={alt}
       loading={priority ? 'eager' : 'lazy'}
       decoding="async"

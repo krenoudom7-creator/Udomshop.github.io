@@ -1,6 +1,7 @@
 import { useState, type ChangeEvent, type FormEvent } from 'react';
 import { Camera, ImagePlus, Loader2, Plus, X } from 'lucide-react';
 import type { Category, Product, ProductCategory, ProductStatus } from '../types/shop.ts';
+import { apiUrl, safeReadJson } from '../utils/api.ts';
 import { compressImageToWebP } from '../utils/format.ts';
 import { SafeImage } from './SafeImage.tsx';
 
@@ -75,7 +76,7 @@ export function AdminProductFormModal({
     setError('');
     setCreatingCat(true);
     try {
-      const res = await fetch('/api/admin/categories', {
+      const res = await fetch(apiUrl('/api/admin/categories'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders },
         credentials: 'include',
@@ -84,9 +85,9 @@ export function AdminProductFormModal({
           nameEn: newCatNameEn.trim(),
         }),
       });
-      const data = (await res.json()) as { category?: Category; error?: string };
-      if (!res.ok || !data.category) {
-        setError(data.error || 'មិនអាចបន្ថែមប្រភេទទំនិញថ្មីបានទេ');
+      const data = await safeReadJson<{ category?: Category; error?: string }>(res);
+      if (!data || !res.ok || !data.category) {
+        setError(data?.error || 'មិនអាចបន្ថែមប្រភេទទំនិញថ្មីបានទេ');
       } else {
         onCategoryCreated(data.category);
         setCategory(data.category.slug);
@@ -112,16 +113,16 @@ export function AdminProductFormModal({
       const formData = new FormData();
       formData.append('image', optimized);
 
-      const res = await fetch('/api/admin/upload', {
+      const res = await fetch(apiUrl('/api/admin/upload'), {
         method: 'POST',
         headers: authHeaders,
         credentials: 'include',
         body: formData,
       });
 
-      const data = (await res.json()) as { imageUrl?: string; error?: string };
-      if (!res.ok || !data.imageUrl) {
-        setError(data.error || 'មិនអាច Upload រូបភាពបានទេ');
+      const data = await safeReadJson<{ imageUrl?: string; error?: string }>(res);
+      if (!data || !res.ok || !data.imageUrl) {
+        setError(data?.error || 'មិនអាច Upload រូបភាពបានទេ');
       } else {
         setImageUrl(data.imageUrl);
       }
@@ -161,8 +162,8 @@ export function AdminProductFormModal({
       };
 
       const url = editingProduct
-        ? `/api/admin/products/${editingProduct.id}`
-        : '/api/admin/products';
+        ? apiUrl(`/api/admin/products/${editingProduct.id}`)
+        : apiUrl('/api/admin/products');
       const method = editingProduct ? 'PUT' : 'POST';
 
       const res = await fetch(url, {
@@ -175,9 +176,9 @@ export function AdminProductFormModal({
         body: JSON.stringify(payload),
       });
 
-      const data = (await res.json()) as { error?: string };
-      if (!res.ok) {
-        setError(data.error || 'មិនអាចរក្សាទុកផលិតផលបានទេ');
+      const data = await safeReadJson<{ error?: string }>(res);
+      if (!data || !res.ok) {
+        setError(data?.error || 'មិនអាចរក្សាទុកផលិតផលបានទេ');
         return;
       }
 

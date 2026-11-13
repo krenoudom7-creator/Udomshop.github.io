@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { Loader2, PackageCheck, Search, X } from 'lucide-react';
 import type { Order } from '../types/shop.ts';
+import { apiUrl, safeReadJson } from '../utils/api.ts';
 import { formatDateTimeKm, formatDualMoney, ORDER_STATUS_LABELS } from '../utils/format.ts';
 
 interface OrderTrackerModalProps {
@@ -28,9 +29,11 @@ export function OrderTrackerModal({ open, khrRate, onClose }: OrderTrackerModalP
         orderNumber: orderNumber.trim().toUpperCase(),
         phone: phone.trim(),
       });
-      const res = await fetch(`/api/orders/lookup?${params.toString()}`);
-      const data = (await res.json()) as { order?: Order; error?: string };
-      if (!res.ok || !data.order) {
+      const res = await fetch(apiUrl(`/api/orders/lookup?${params.toString()}`));
+      const data = await safeReadJson<{ order?: Order; error?: string }>(res);
+      if (!data) {
+        setError('មុខងារតាមដាន Order ត្រូវការការតភ្ជាប់ Node.js Server។');
+      } else if (!res.ok || !data.order) {
         setError(data.error || 'រកមិនឃើញការបញ្ជាទិញទេ');
       } else {
         setOrder(data.order);

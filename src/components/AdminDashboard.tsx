@@ -51,6 +51,7 @@ import type {
   Product,
   StoreSettings,
 } from '../types/shop.ts';
+import { apiUrl, safeReadJson } from '../utils/api.ts';
 import {
   formatDateTimeKm,
   formatDualMoney,
@@ -213,10 +214,10 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
   useEffect(() => {
     const checkSession = async () => {
       try {
-        const res = await fetch('/api/admin/me', { credentials: 'include' });
+        const res = await fetch(apiUrl('/api/admin/me'), { credentials: 'include' });
         if (res.ok) {
-          const data = (await res.json()) as { user: AdminSessionUser };
-          setAdminUser(data.user);
+          const data = await safeReadJson<{ user: AdminSessionUser }>(res);
+          if (data?.user) setAdminUser(data.user);
         }
       } catch {
         // Not logged in
@@ -238,7 +239,7 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
     setLoginError('');
     setLoginBusy(true);
     try {
-      const res = await fetch('/api/admin/login', {
+      const res = await fetch(apiUrl('/api/admin/login'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -248,11 +249,15 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
           accessCode: accessCode.trim(),
         }),
       });
-      const data = (await res.json()) as {
+      const data = await safeReadJson<{
         user?: AdminSessionUser;
         token?: string;
         error?: string;
-      };
+      }>(res);
+      if (!data) {
+        setLoginError('Admin Dashboard ត្រូវការ Node.js Server (មិនដំណើរការលើ GitHub Pages Static ទេ)។');
+        return;
+      }
       if (!res.ok || !data.user) {
         setLoginError(data.error || 'ការចូលគណនីបរាជ័យ');
         return;
@@ -276,17 +281,21 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
     try {
       const cred = await signInWithPopup(auth, googleAuthProvider);
       const idToken = await cred.user.getIdToken();
-      const res = await fetch('/api/admin/google-login', {
+      const res = await fetch(apiUrl('/api/admin/google-login'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({ idToken, accessCode: accessCode.trim() }),
       });
-      const data = (await res.json()) as {
+      const data = await safeReadJson<{
         user?: AdminSessionUser;
         token?: string;
         error?: string;
-      };
+      }>(res);
+      if (!data) {
+        setLoginError('Admin Dashboard ត្រូវការ Node.js Server (មិនដំណើរការលើ GitHub Pages Static ទេ)។');
+        return;
+      }
       if (!res.ok || !data.user) {
         setLoginError(data.error || 'គណនី Google នេះមិនមានសិទ្ធិ Admin ទេ');
         return;

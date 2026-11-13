@@ -27,6 +27,7 @@ import type {
   Order,
   PaymentMethod,
 } from '../types/shop.ts';
+import { apiUrl, safeReadJson } from '../utils/api.ts';
 import { formatDateTimeKm, formatDualMoney, formatMoney } from '../utils/format.ts';
 import { SafeImage } from './SafeImage.tsx';
 
@@ -147,12 +148,12 @@ export function CartCheckoutDrawer({
     setCouponError('');
     setCouponChecking(true);
     try {
-      const res = await fetch('/api/coupons/validate', {
+      const res = await fetch(apiUrl('/api/coupons/validate'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code, subtotalUsd }),
       });
-      const data = (await res.json()) as {
+      const data = await safeReadJson<{
         coupon?: {
           code: string;
           discountType: 'percent' | 'fixed';
@@ -160,8 +161,10 @@ export function CartCheckoutDrawer({
           discountUsd: number;
         };
         error?: string;
-      };
-      if (!res.ok || !data.coupon) {
+      }>(res);
+      if (!data) {
+        setCouponError('មុខងារកូដបញ្ចុះតម្លៃត្រូវការការតភ្ជាប់ Server។');
+      } else if (!res.ok || !data.coupon) {
         setAppliedCoupon(null);
         setCouponError(data.error || 'កូដបញ្ចុះតម្លៃមិនត្រឹមត្រូវទេ');
       } else {
@@ -186,7 +189,7 @@ export function CartCheckoutDrawer({
     setSubmitting(true);
 
     try {
-      const response = await fetch('/api/orders', {
+      const response = await fetch(apiUrl('/api/orders'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -207,11 +210,18 @@ export function CartCheckoutDrawer({
         }),
       });
 
-      const data = (await response.json()) as {
+      const data = await safeReadJson<{
         order?: Order;
         abaError?: string;
         error?: string;
-      };
+      }>(response);
+
+      if (!data) {
+        setError(
+          'ការបញ្ជាទិញ និង ABA PayWay ត្រូវការ Node.js Server (មិនដំណើរការលើ GitHub Pages Static ទេ)។'
+        );
+        return;
+      }
 
       if (!response.ok || !data.order) {
         setError(data.error || 'មិនអាចបង្កើតការបញ្ជាទិញបានទេ');
@@ -238,14 +248,18 @@ export function CartCheckoutDrawer({
     setVerifying(true);
     setVerifyMessage('');
     try {
-      const res = await fetch(`/api/payments/verify/${createdOrder.id}`, {
+      const res = await fetch(apiUrl(`/api/payments/verify/${createdOrder.id}`), {
         method: 'POST',
       });
-      const data = (await res.json()) as {
+      const data = await safeReadJson<{
         order?: Order;
         verification?: { verifiedPaid: boolean; status: string; message: string };
         error?: string;
-      };
+      }>(res);
+      if (!data) {
+        setVerifyMessage('មិនអាចភ្ជាប់ទៅ Server ដើម្បីផ្ទៀងផ្ទាត់បានទេ។');
+        return;
+      }
       if (data.order) {
         setCreatedOrder(data.order);
       }
@@ -276,12 +290,16 @@ export function CartCheckoutDrawer({
     setSendingTransferNote(true);
     setTransferNoteSent('');
     try {
-      const res = await fetch(`/api/orders/${createdOrder.id}/transfer-note`, {
+      const res = await fetch(apiUrl(`/api/orders/${createdOrder.id}/transfer-note`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ reference: transferRef.trim() }),
       });
-      const data = (await res.json()) as { order?: Order; message?: string; error?: string };
+      const data = await safeReadJson<{ order?: Order; message?: string; error?: string }>(res);
+      if (!data) {
+        setTransferNoteSent('មិនអាចភ្ជាប់ទៅ Server បានទេ។');
+        return;
+      }
       if (data.order) setCreatedOrder(data.order);
       setTransferNoteSent(
         data.message || data.error || 'បានផ្ញើដំណឹងទៅហាងរួចរាល់'
