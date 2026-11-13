@@ -1,6 +1,6 @@
-import type { CurrencyCode, OrderStatus, ProductCategory } from '../types/shop.ts';
+import type { Category, CurrencyCode, OrderStatus, ProductCategory } from '../types/shop.ts';
 
-export const CATEGORY_LABELS: Record<'all' | ProductCategory, string> = {
+export const DEFAULT_CATEGORY_LABELS: Record<string, string> = {
   all: 'ទាំងអស់',
   shoes: 'ស្បែកជើង',
   clothing: 'សម្លៀកបំពាក់',
@@ -8,6 +8,16 @@ export const CATEGORY_LABELS: Record<'all' | ProductCategory, string> = {
   watches: 'នាឡិកា',
   accessories: 'សម្ភារៈប្រើប្រាស់',
 };
+
+export function getCategoryLabel(
+  slug: ProductCategory,
+  categories: Category[] = []
+): string {
+  if (slug === 'all') return 'ទាំងអស់';
+  const match = categories.find((c) => c.slug === slug);
+  if (match) return match.nameKm;
+  return DEFAULT_CATEGORY_LABELS[slug] || slug;
+}
 
 export const ORDER_STATUS_LABELS: Record<OrderStatus, { km: string; en: string; tone: string }> = {
   pending: {

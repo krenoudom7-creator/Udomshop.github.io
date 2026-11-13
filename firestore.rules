@@ -47,13 +47,43 @@ service cloud.firestore {
         ]) &&
         data.sku is string && data.sku.size() >= 2 && data.sku.size() <= 64 &&
         data.name is string && data.name.size() >= 1 && data.name.size() <= 160 &&
-        data.category in ['shoes', 'clothing', 'bags', 'watches', 'accessories'] &&
+        data.category is string && data.category.size() >= 1 && data.category.size() <= 64 &&
         data.priceUsd is number && data.priceUsd >= 0 &&
         (!('discountPriceUsd' in data) || data.discountPriceUsd == null || (data.discountPriceUsd is number && data.discountPriceUsd >= 0)) &&
         data.stock is int && data.stock >= 0 &&
         data.status in ['available', 'out_of_stock'] &&
         data.imageUrl is string && data.imageUrl.size() >= 1 && data.imageUrl.size() <= 1000 &&
         (!('description' in data) || (data.description is string && data.description.size() <= 2000));
+    }
+
+    function isValidCategory(data) {
+      return data.keys().hasAll(['slug', 'nameKm', 'sortOrder']) &&
+        data.keys().hasOnly(['slug', 'nameKm', 'nameEn', 'sortOrder', 'createdAt', 'updatedAt']) &&
+        data.slug is string && data.slug.size() >= 1 && data.slug.size() <= 64 &&
+        data.nameKm is string && data.nameKm.size() >= 1 && data.nameKm.size() <= 80 &&
+        data.sortOrder is int;
+    }
+
+    // Dynamic Categories: public read, admin-only write
+    match /categories/{categoryId} {
+      allow get: if isValidId(categoryId);
+      allow list: if true;
+      allow create, update: if isAdmin() && isValidId(categoryId) && isValidCategory(incoming());
+      allow delete: if isAdmin() && isValidId(categoryId);
+    }
+
+    // Storefront settings: public read, admin-only write
+    match /settings/{settingId} {
+      allow get: if isValidId(settingId);
+      allow list: if true;
+      allow write: if false;
+    }
+
+    // Coupons: admin-only read, server-only write
+    match /coupons/{couponId} {
+      allow get: if isAdmin() && isValidId(couponId);
+      allow list: if isAdmin();
+      allow create, update, delete: if false;
     }
 
     // Public catalog read; strictly admin-only write

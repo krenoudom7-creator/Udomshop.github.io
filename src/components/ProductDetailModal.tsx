@@ -1,13 +1,16 @@
 import { useState, type MouseEvent } from 'react';
-import { Check, Minus, Plus, ShoppingBag, X, ZoomIn, ZoomOut } from 'lucide-react';
-import type { CurrencyCode, Product } from '../types/shop.ts';
-import { CATEGORY_LABELS, formatMoney } from '../utils/format.ts';
+import { Check, Heart, Minus, Plus, Share2, ShoppingBag, X, ZoomIn, ZoomOut } from 'lucide-react';
+import type { Category, CurrencyCode, Product } from '../types/shop.ts';
+import { formatMoney, getCategoryLabel } from '../utils/format.ts';
 import { SafeImage } from './SafeImage.tsx';
 
 interface ProductDetailModalProps {
   product: Product | null;
+  categories: Category[];
   currency: CurrencyCode;
   khrRate: number;
+  isWishlisted: boolean;
+  onToggleWishlist: (productId: string) => void;
   onClose: () => void;
   onAddToCart: (product: Product, quantity: number, size?: string, color?: string) => void;
   onBuyNow: (product: Product, quantity: number, size?: string, color?: string) => void;
@@ -15,8 +18,11 @@ interface ProductDetailModalProps {
 
 export function ProductDetailModal({
   product,
+  categories,
   currency,
   khrRate,
+  isWishlisted,
+  onToggleWishlist,
   onClose,
   onAddToCart,
   onBuyNow,
@@ -30,6 +36,7 @@ export function ProductDetailModal({
   );
   const [zoomed, setZoomed] = useState(false);
   const [origin, setOrigin] = useState({ x: 50, y: 50 });
+  const [copied, setCopied] = useState(false);
 
   if (!product) return null;
 
@@ -43,12 +50,10 @@ export function ProductDetailModal({
     ? Math.round(((product.priceUsd - activePrice) / product.priceUsd) * 100)
     : 0;
 
-  const activeSize = selectedSize && product.sizes.includes(selectedSize)
-    ? selectedSize
-    : product.sizes[0];
-  const activeColor = selectedColor && product.colors.includes(selectedColor)
-    ? selectedColor
-    : product.colors[0];
+  const activeSize =
+    selectedSize && product.sizes.includes(selectedSize) ? selectedSize : product.sizes[0];
+  const activeColor =
+    selectedColor && product.colors.includes(selectedColor) ? selectedColor : product.colors[0];
 
   const handleMouseMove = (e: MouseEvent<HTMLDivElement>) => {
     if (!zoomed) return;
@@ -56,6 +61,21 @@ export function ProductDetailModal({
     const x = Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100));
     const y = Math.max(0, Math.min(100, ((e.clientY - rect.top) / rect.height) * 100));
     setOrigin({ x, y });
+  };
+
+  const handleShare = async () => {
+    try {
+      const shareText = `${product.name} — $${activePrice.toFixed(2)} | ឧត្តម Shop`;
+      if (navigator.share) {
+        await navigator.share({ title: product.name, text: shareText, url: window.location.href });
+      } else {
+        await navigator.clipboard.writeText(`${shareText} (${window.location.href})`);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1800);
+      }
+    } catch {
+      // Ignored if user cancels share
+    }
   };
 
   return (
@@ -70,15 +90,34 @@ export function ProductDetailModal({
         className="relative flex max-h-[92dvh] w-full max-w-4xl flex-col overflow-hidden rounded-t-3xl sm:rounded-2xl bg-[#FAF9F6] shadow-2xl lg:grid lg:grid-cols-12"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Close button */}
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="បិទ"
-          className="absolute right-3 top-3 z-20 flex h-11 w-11 items-center justify-center rounded-full bg-white/90 text-[#111111] shadow-sm backdrop-blur transition hover:bg-white active:scale-95"
-        >
-          <X className="h-5 w-5" />
-        </button>
+        <div className="absolute right-3 top-3 z-20 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => onToggleWishlist(product.id)}
+            aria-label="រក្សាទុកក្នុងបញ្ជីពេញចិត្ត"
+            className="flex h-11 w-11 items-center justify-center rounded-full bg-white/90 text-[#111111] shadow-sm backdrop-blur transition hover:bg-white active:scale-95"
+          >
+            <Heart
+              className={`h-5 w-5 ${isWishlisted ? 'fill-red-600 text-red-600' : ''}`}
+            />
+          </button>
+          <button
+            type="button"
+            onClick={handleShare}
+            aria-label="ចែករំលែក"
+            className="flex h-11 w-11 items-center justify-center rounded-full bg-white/90 text-[#111111] shadow-sm backdrop-blur transition hover:bg-white active:scale-95"
+          >
+            <Share2 className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="បិទ"
+            className="flex h-11 w-11 items-center justify-center rounded-full bg-white/90 text-[#111111] shadow-sm backdrop-blur transition hover:bg-white active:scale-95"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
 
         {/* Image Gallery with Zoom */}
         <div className="relative bg-[#EFECE5] lg:col-span-7 flex flex-col justify-center">
@@ -119,9 +158,10 @@ export function ProductDetailModal({
         {/* Purchase Details */}
         <div className="flex flex-1 flex-col overflow-y-auto p-5 sm:p-7 lg:col-span-5 bg-white">
           <div className="flex items-center gap-2 text-xs text-[#6B6559]">
-            <span>{CATEGORY_LABELS[product.category]}</span>
+            <span>{getCategoryLabel(product.category, categories)}</span>
             <span aria-hidden="true">·</span>
             <span className="font-mono-num">{product.sku}</span>
+            {copied && <span className="text-emerald-700 font-medium">· បានចម្លងតំណ!</span>}
           </div>
 
           <h2 className="mt-2 text-xl sm:text-2xl font-semibold text-[#111111] leading-snug">
@@ -162,10 +202,8 @@ export function ProductDetailModal({
             )}
           </div>
 
-          {/* Description */}
           <p className="mt-4 text-sm leading-relaxed text-[#4A463E]">{product.description}</p>
 
-          {/* Sizes */}
           {product.sizes && product.sizes.length > 0 && (
             <div className="mt-5">
               <p className="text-xs font-medium text-[#6B6559]">ជ្រើសរើសទំហំ (Size)</p>
@@ -191,7 +229,6 @@ export function ProductDetailModal({
             </div>
           )}
 
-          {/* Colors */}
           {product.colors && product.colors.length > 0 && (
             <div className="mt-4">
               <p className="text-xs font-medium text-[#6B6559]">ជ្រើសរើសពណ៌ (Color)</p>

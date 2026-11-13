@@ -88,6 +88,7 @@ export async function sendOrderTelegramNotification(
 
   const paymentLabel = order.paymentMethod === 'aba_khqr' ? 'ABA KHQR' : 'ABA PayWay';
   const statusLabel = order.paymentStatus.toUpperCase();
+  const zoneLabel = order.deliveryZone === 'province' ? 'តាមខេត្ត' : 'ភ្នំពេញ';
 
   const message = [
     headerMap[eventType],
@@ -95,11 +96,15 @@ export async function sendOrderTelegramNotification(
     `• <b>Order ID:</b> <code>${escapeHtml(order.orderNumber)}</code>`,
     `• <b>ឈ្មោះអតិថិជន:</b> ${escapeHtml(order.customerName)}`,
     `• <b>លេខទូរស័ព្ទ:</b> ${escapeHtml(order.customerPhone)}`,
+    `• <b>តំបន់ដឹកជញ្ជូន:</b> ${zoneLabel}`,
     `• <b>អាសយដ្ឋាន:</b> ${escapeHtml(order.shippingAddress)}`,
     '',
     `<b>មុខទំនិញ:</b>`,
     itemLines,
     '',
+    ...(order.couponCode
+      ? [`• <b>កូដបញ្ចុះតម្លៃ (${escapeHtml(order.couponCode)}):</b> -$${(order.couponDiscountUsd || 0).toFixed(2)}`]
+      : []),
     `• <b>ដឹកជញ្ជូន:</b> $${order.shippingFeeUsd.toFixed(2)}`,
     `• <b>តម្លៃសរុប:</b> <b>$${order.totalUsd.toFixed(2)}</b> (${order.totalKhr.toLocaleString('en-US')} ៛)`,
     `• <b>វិធីសាស្ត្រទូទាត់:</b> ${paymentLabel}`,

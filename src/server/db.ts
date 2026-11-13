@@ -4,10 +4,13 @@ import crypto from 'crypto';
 import type {
   AdminUser,
   BackupSnapshot,
+  Category,
+  Coupon,
   CustomerRecord,
   Order,
   PaymentRecord,
   Product,
+  StoreSettings,
 } from '../types/shop.ts';
 
 export interface AdminAccountRecord extends AdminUser {
@@ -32,6 +35,9 @@ export interface AdminRoleRecord {
 }
 
 interface DatabaseState {
+  categories: Category[];
+  coupons: Coupon[];
+  settings: StoreSettings;
   products: Product[];
   orders: Order[];
   customers: CustomerRecord[];
@@ -46,7 +52,31 @@ const DATA_DIR = path.resolve(process.cwd(), 'data');
 const DB_FILE = path.join(DATA_DIR, 'oudom-shop.db.json');
 const BACKUP_DIR = path.join(DATA_DIR, 'backups');
 
+export const DEFAULT_STORE_SETTINGS: StoreSettings = {
+  shopName: 'ឧត្តម Shop',
+  heroEyebrow: 'ឧត្តម Shop · សម័យទំនើប និងប្រណីតភាព',
+  heroTitle: 'ស្ទីលប្រណីត សម្រាប់គ្រប់ជំហានប្រចាំថ្ងៃ',
+  heroSubtitle:
+    'ស្បែកជើង សម្លៀកបំពាក់ កាបូប និងនាឡិកាគុណភាពខ្ពស់ ដឹកជញ្ជូនរហ័សទូទាំងប្រទេស ទូទាត់សុវត្ថិភាពតាម ABA PayWay។',
+  announcementText: 'ដឹកជញ្ជូនឥតគិតថ្លៃទូទាំងប្រទេសសម្រាប់ការបញ្ជាទិញចាប់ពី $50 · ប្រើកូដ OUDOM10 បញ្ចុះ 10%',
+  contactPhone: '012 888 999',
+  contactAddress: 'រាជធានីភ្នំពេញ ព្រះរាជាណាចក្រកម្ពុជា',
+  telegramContact: '@oudomshop_kh',
+  abaAccountName: 'UDOM KREN',
+  abaAccountId: '3609517',
+  abaAccountUsd: '009 338 762',
+  abaAccountKhr: '009 338 764',
+  khrRate: Number(process.env.KHR_EXCHANGE_RATE || 4100),
+  freeShippingThresholdUsd: 50,
+  phnomPenhShippingUsd: 1.5,
+  provinceShippingUsd: 2.5,
+  updatedAt: new Date().toISOString(),
+};
+
 const DEFAULT_STATE: DatabaseState = {
+  categories: [],
+  coupons: [],
+  settings: DEFAULT_STORE_SETTINGS,
   products: [],
   orders: [],
   customers: [],
@@ -72,6 +102,9 @@ export async function readDb(): Promise<DatabaseState> {
     const raw = await fs.readFile(DB_FILE, 'utf8');
     const parsed = JSON.parse(raw) as Partial<DatabaseState>;
     cache = {
+      categories: parsed.categories || [],
+      coupons: parsed.coupons || [],
+      settings: { ...DEFAULT_STORE_SETTINGS, ...(parsed.settings || {}) },
       products: parsed.products || [],
       orders: parsed.orders || [],
       customers: parsed.customers || [],
@@ -117,6 +150,9 @@ export async function writePhysicalBackupFile(snapshotId: string, state: Databas
   const filePath = path.join(BACKUP_DIR, `${snapshotId}.json`);
   const safePayload = {
     exportedAt: new Date().toISOString(),
+    categories: state.categories,
+    coupons: state.coupons,
+    settings: state.settings,
     products: state.products,
     orders: state.orders,
     customers: state.customers,

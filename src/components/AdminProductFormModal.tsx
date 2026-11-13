@@ -1,28 +1,32 @@
 import { useState, type ChangeEvent, type FormEvent } from 'react';
-import { Camera, ImagePlus, Loader2, X } from 'lucide-react';
-import type { Product, ProductCategory, ProductStatus } from '../types/shop.ts';
-import { CATEGORY_LABELS, compressImageToWebP } from '../utils/format.ts';
+import { Camera, ImagePlus, Loader2, Plus, X } from 'lucide-react';
+import type { Category, Product, ProductCategory, ProductStatus } from '../types/shop.ts';
+import { compressImageToWebP } from '../utils/format.ts';
 import { SafeImage } from './SafeImage.tsx';
 
 interface AdminProductFormModalProps {
   open: boolean;
   editingProduct: Product | null;
+  categories: Category[];
   authToken: string | null;
   onClose: () => void;
   onSaved: () => void;
+  onCategoryCreated: (category: Category) => void;
 }
 
 export function AdminProductFormModal({
   open,
   editingProduct,
+  categories,
   authToken,
   onClose,
   onSaved,
+  onCategoryCreated,
 }: AdminProductFormModalProps) {
   const [name, setName] = useState(editingProduct?.name || '');
   const [sku, setSku] = useState(editingProduct?.sku || '');
   const [category, setCategory] = useState<ProductCategory>(
-    editingProduct?.category || 'shoes'
+    editingProduct?.category || categories[0]?.slug || 'shoes'
   );
   const [priceUsd, setPriceUsd] = useState(
     editingProduct ? String(editingProduct.priceUsd) : ''
@@ -49,6 +53,12 @@ export function AdminProductFormModal({
   const [isNew, setIsNew] = useState(editingProduct?.isNew ?? true);
   const [isPopular, setIsPopular] = useState(editingProduct?.isPopular ?? false);
 
+  // Inline quick category creator
+  const [addingCategory, setAddingCategory] = useState(false);
+  const [newCatNameKm, setNewCatNameKm] = useState('');
+  const [newCatNameEn, setNewCatNameEn] = useState('');
+  const [creatingCat, setCreatingCat] = useState(false);
+
   const [uploading, setUploading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -59,6 +69,37 @@ export function AdminProductFormModal({
   if (authToken) {
     authHeaders.Authorization = `Bearer ${authToken}`;
   }
+
+  const handleQuickCreateCategory = async () => {
+    if (!newCatNameKm.trim()) return;
+    setError('');
+    setCreatingCat(true);
+    try {
+      const res = await fetch('/api/admin/categories', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        credentials: 'include',
+        body: JSON.stringify({
+          nameKm: newCatNameKm.trim(),
+          nameEn: newCatNameEn.trim(),
+        }),
+      });
+      const data = (await res.json()) as { category?: Category; error?: string };
+      if (!res.ok || !data.category) {
+        setError(data.error || 'មិនអាចបន្ថែមប្រភេទទំនិញថ្មីបានទេ');
+      } else {
+        onCategoryCreated(data.category);
+        setCategory(data.category.slug);
+        setNewCatNameKm('');
+        setNewCatNameEn('');
+        setAddingCategory(false);
+      }
+    } catch {
+      setError('មានបញ្ហាក្នុងការបន្ថែមប្រភេទទំនិញ');
+    } finally {
+      setCreatingCat(false);
+    }
+  };
 
   const handleImageFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -175,7 +216,6 @@ export function AdminProductFormModal({
         </div>
 
         <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-5 space-y-4">
-          {/* Image Upload (Gallery + Mobile Camera) */}
           <div className="rounded-2xl border border-[#E2DDD3] bg-[#FAF9F6] p-4">
             <p className="text-xs font-medium text-[#4A463E] mb-3">
               រូបភាពផលិតផល (បម្លែងជា WebP ស្វ័យប្រវត្តិ) *
@@ -266,23 +306,63 @@ export function AdminProductFormModal({
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-[#4A463E] mb-1">
-                ប្រភេទផលិតផល *
-              </label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-xs font-medium text-[#4A463E]">
+                  ប្រភេទផលិតផល *
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setAddingCategory((v) => !v)}
+                  className="flex items-center gap-1 text-[11px] font-semibold text-[#9A6F04] hover:underline"
+                >
+                  <Plus className="h-3 w-3" />
+                  <span>{addingCategory ? 'បោះបង់' : 'បន្ថែមប្រភេទថ្មី'}</span>
+                </button>
+              </div>
               <select
                 value={category}
-                onChange={(e) => setCategory(e.target.value as ProductCategory)}
+                onChange={(e) => setCategory(e.target.value)}
                 className="h-11 w-full rounded-xl border border-[#E2DDD3] bg-[#FAF9F6] px-3 text-sm focus:border-[#111111] focus:bg-white focus:outline-none"
               >
-                {(['shoes', 'clothing', 'bags', 'watches', 'accessories'] as ProductCategory[]).map(
-                  (c) => (
-                    <option key={c} value={c}>
-                      {CATEGORY_LABELS[c]}
-                    </option>
-                  )
-                )}
+                {categories.map((c) => (
+                  <option key={c.id} value={c.slug}>
+                    {c.nameKm} {c.nameEn ? `(${c.nameEn})` : ''}
+                  </option>
+                ))}
               </select>
             </div>
+
+            {addingCategory && (
+              <div className="sm:col-span-2 rounded-xl border border-[#C9A227]/50 bg-[#FAF9F6] p-3 space-y-2">
+                <p className="text-xs font-semibold text-[#111111]">
+                  បង្កើតប្រភេទទំនិញថ្មីរហ័ស
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <input
+                    type="text"
+                    value={newCatNameKm}
+                    onChange={(e) => setNewCatNameKm(e.target.value)}
+                    placeholder="ឈ្មោះខ្មែរ (ឧ. គ្រឿងសម្អាង)"
+                    className="h-10 rounded-lg border border-[#E2DDD3] bg-white px-3 text-xs"
+                  />
+                  <input
+                    type="text"
+                    value={newCatNameEn}
+                    onChange={(e) => setNewCatNameEn(e.target.value)}
+                    placeholder="English Slug (ឧ. Cosmetics)"
+                    className="h-10 rounded-lg border border-[#E2DDD3] bg-white px-3 text-xs"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleQuickCreateCategory}
+                    disabled={creatingCat || !newCatNameKm.trim()}
+                    className="h-10 rounded-lg bg-[#111111] px-3 text-xs font-semibold text-white disabled:opacity-45"
+                  >
+                    {creatingCat ? 'កំពុងបង្កើត...' : 'រក្សាទុកប្រភេទ'}
+                  </button>
+                </div>
+              </div>
+            )}
 
             <div>
               <label className="block text-xs font-medium text-[#4A463E] mb-1">

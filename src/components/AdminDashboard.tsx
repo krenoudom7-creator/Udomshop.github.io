@@ -2,10 +2,12 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { signInWithPopup } from 'firebase/auth';
 import {
   BarChart3,
+  Check,
   CreditCard,
   Database,
   Download,
   Edit3,
+  FolderPlus,
   KeyRound,
   LayoutDashboard,
   Loader2,
@@ -13,11 +15,14 @@ import {
   Menu,
   Package,
   Plus,
+  Printer,
   RefreshCw,
   Send,
+  Settings,
   Shield,
   ShoppingCart,
   Store,
+  Tag,
   Trash2,
   Users,
   X,
@@ -36,17 +41,20 @@ import type {
   AdminRole,
   AdminUser,
   BackupSnapshot,
+  Category,
+  Coupon,
   CustomerRecord,
   DashboardStats,
   Order,
   OrderStatus,
   PaymentRecord,
   Product,
+  StoreSettings,
 } from '../types/shop.ts';
 import {
-  CATEGORY_LABELS,
   formatDateTimeKm,
   formatDualMoney,
+  getCategoryLabel,
   ORDER_STATUS_LABELS,
 } from '../utils/format.ts';
 import { SafeImage } from './SafeImage.tsx';
@@ -64,7 +72,7 @@ interface AdminDashboardProps {
   onNavigateStore: () => void;
 }
 
-type AdminTab = 'overview' | 'products' | 'orders' | 'customers' | 'security';
+type AdminTab = 'overview' | 'products' | 'orders' | 'customers' | 'coupons' | 'security';
 
 export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
   const [authLoading, setAuthLoading] = useState(true);
@@ -83,10 +91,13 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   const [stats, setStats] = useState<DashboardStats | null>(null);
+  const [categories, setCategories] = useState<Category[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [customers, setCustomers] = useState<CustomerRecord[]>([]);
   const [payments, setPayments] = useState<PaymentRecord[]>([]);
+  const [coupons, setCoupons] = useState<Coupon[]>([]);
+  const [settingsForm, setSettingsForm] = useState<StoreSettings | null>(null);
   const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
   const [backups, setBackups] = useState<BackupSnapshot[]>([]);
 
@@ -98,8 +109,26 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
+  // Dynamic Category Manager state
+  const [catNameKm, setCatNameKm] = useState('');
+  const [catNameEn, setCatNameEn] = useState('');
+  const [catBusy, setCatBusy] = useState(false);
+  const [catEditingId, setCatEditingId] = useState<string | null>(null);
+  const [catEditNameKm, setCatEditNameKm] = useState('');
+  const [catEditNameEn, setCatEditNameEn] = useState('');
+
+  // Coupon Creator state
+  const [couponCode, setCouponCode] = useState('');
+  const [couponType, setCouponType] = useState<'percent' | 'fixed'>('percent');
+  const [couponValue, setCouponValue] = useState('10');
+  const [couponMinOrder, setCouponMinOrder] = useState('25');
+  const [couponMaxUses, setCouponMaxUses] = useState('100');
+  const [couponBusy, setCouponBusy] = useState(false);
+  const [settingsBusy, setSettingsBusy] = useState(false);
+
   const [orderStatusFilter, setOrderStatusFilter] = useState<string>('all');
   const [orderSearch, setOrderSearch] = useState('');
+  const [printingOrder, setPrintingOrder] = useState<Order | null>(null);
 
   // New Admin User Form (Super Admin only)
   const [newUsername, setNewUsername] = useState('');
@@ -117,18 +146,26 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
     setActionError('');
     try {
       const headers = authHeaders();
-      const [statsRes, prodRes, ordRes, custRes, payRes, bkpRes] = await Promise.all([
-        fetch('/api/admin/stats', { headers, credentials: 'include' }),
-        fetch('/api/products', { headers, credentials: 'include' }),
-        fetch('/api/admin/orders', { headers, credentials: 'include' }),
-        fetch('/api/admin/customers', { headers, credentials: 'include' }),
-        fetch('/api/admin/payments', { headers, credentials: 'include' }),
-        fetch('/api/admin/backups', { headers, credentials: 'include' }),
-      ]);
+      const [statsRes, catRes, prodRes, ordRes, custRes, payRes, cpnRes, setRes, bkpRes] =
+        await Promise.all([
+          fetch('/api/admin/stats', { headers, credentials: 'include' }),
+          fetch('/api/categories', { headers, credentials: 'include' }),
+          fetch('/api/products', { headers, credentials: 'include' }),
+          fetch('/api/admin/orders', { headers, credentials: 'include' }),
+          fetch('/api/admin/customers', { headers, credentials: 'include' }),
+          fetch('/api/admin/payments', { headers, credentials: 'include' }),
+          fetch('/api/admin/coupons', { headers, credentials: 'include' }),
+          fetch('/api/admin/settings', { headers, credentials: 'include' }),
+          fetch('/api/admin/backups', { headers, credentials: 'include' }),
+        ]);
 
       if (statsRes.ok) {
         const d = (await statsRes.json()) as { stats: DashboardStats };
         setStats(d.stats);
+      }
+      if (catRes.ok) {
+        const d = (await catRes.json()) as { categories: Category[] };
+        setCategories(d.categories);
       }
       if (prodRes.ok) {
         const d = (await prodRes.json()) as { products: Product[] };
@@ -145,6 +182,14 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
       if (payRes.ok) {
         const d = (await payRes.json()) as { payments: PaymentRecord[] };
         setPayments(d.payments);
+      }
+      if (cpnRes.ok) {
+        const d = (await cpnRes.json()) as { coupons: Coupon[] };
+        setCoupons(d.coupons);
+      }
+      if (setRes.ok) {
+        const d = (await setRes.json()) as { settings: StoreSettings };
+        setSettingsForm(d.settings);
       }
       if (bkpRes.ok) {
         const d = (await bkpRes.json()) as { backups: BackupSnapshot[] };
@@ -405,6 +450,157 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
     }
   };
 
+  // ---------------- DYNAMIC CATEGORIES HANDLERS ----------------
+  const handleCreateCategory = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!catNameKm.trim()) return;
+    setActionError('');
+    setActionMsg('');
+    setCatBusy(true);
+    try {
+      const res = await fetch('/api/admin/categories', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        credentials: 'include',
+        body: JSON.stringify({
+          nameKm: catNameKm.trim(),
+          nameEn: catNameEn.trim(),
+        }),
+      });
+      const data = (await res.json()) as { category?: Category; error?: string };
+      if (!res.ok || !data.category) {
+        setActionError(data.error || 'មិនអាចបន្ថែមប្រភេទទំនិញបានទេ');
+      } else {
+        setCatNameKm('');
+        setCatNameEn('');
+        setActionMsg(`បានបន្ថែមប្រភេទ "${data.category.nameKm}" រួចរាល់`);
+        void loadAllAdminData();
+      }
+    } finally {
+      setCatBusy(false);
+    }
+  };
+
+  const handleSaveEditCategory = async (id: string) => {
+    if (!catEditNameKm.trim()) return;
+    setActionError('');
+    setActionMsg('');
+    const res = await fetch(`/api/admin/categories/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      credentials: 'include',
+      body: JSON.stringify({
+        nameKm: catEditNameKm.trim(),
+        nameEn: catEditNameEn.trim(),
+      }),
+    });
+    const data = (await res.json()) as { error?: string };
+    if (!res.ok) {
+      setActionError(data.error || 'មិនអាចកែប្រែប្រភេទទំនិញបានទេ');
+    } else {
+      setCatEditingId(null);
+      setActionMsg('បានកែប្រែឈ្មោះប្រភេទទំនិញរួចរាល់');
+      void loadAllAdminData();
+    }
+  };
+
+  const handleDeleteCategory = async (id: string) => {
+    setActionError('');
+    setActionMsg('');
+    const res = await fetch(`/api/admin/categories/${id}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+      credentials: 'include',
+    });
+    const data = (await res.json()) as { error?: string };
+    if (!res.ok) {
+      setActionError(data.error || 'មិនអាចលុបប្រភេទទំនិញបានទេ');
+    } else {
+      setActionMsg('បានលុបប្រភេទទំនិញដោយជោគជ័យ');
+      void loadAllAdminData();
+    }
+  };
+
+  // ---------------- PROMO COUPONS & SETTINGS HANDLERS ----------------
+  const handleCreateCoupon = async (e: FormEvent) => {
+    e.preventDefault();
+    setActionError('');
+    setActionMsg('');
+    setCouponBusy(true);
+    try {
+      const res = await fetch('/api/admin/coupons', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        credentials: 'include',
+        body: JSON.stringify({
+          code: couponCode.trim().toUpperCase(),
+          discountType: couponType,
+          discountValue: Number(couponValue),
+          minOrderUsd: Number(couponMinOrder || 0),
+          maxUses: Number(couponMaxUses || 0),
+        }),
+      });
+      const data = (await res.json()) as { coupon?: Coupon; error?: string };
+      if (!res.ok || !data.coupon) {
+        setActionError(data.error || 'មិនអាចបង្កើតកូដបញ្ចុះតម្លៃបានទេ');
+      } else {
+        setCouponCode('');
+        setActionMsg(`បានបង្កើតកូដបញ្ចុះតម្លៃ "${data.coupon.code}" រួចរាល់`);
+        void loadAllAdminData();
+      }
+    } finally {
+      setCouponBusy(false);
+    }
+  };
+
+  const handleToggleCouponActive = async (coupon: Coupon) => {
+    const res = await fetch(`/api/admin/coupons/${coupon.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      credentials: 'include',
+      body: JSON.stringify({ active: !coupon.active }),
+    });
+    if (res.ok) void loadAllAdminData();
+  };
+
+  const handleDeleteCoupon = async (id: string) => {
+    const res = await fetch(`/api/admin/coupons/${id}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+      credentials: 'include',
+    });
+    if (res.ok) {
+      setActionMsg('បានលុបកូដបញ្ចុះតម្លៃរួចរាល់');
+      void loadAllAdminData();
+    }
+  };
+
+  const handleSaveSettings = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!settingsForm) return;
+    setActionError('');
+    setActionMsg('');
+    setSettingsBusy(true);
+    try {
+      const res = await fetch('/api/admin/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        credentials: 'include',
+        body: JSON.stringify(settingsForm),
+      });
+      const data = (await res.json()) as { settings?: StoreSettings; error?: string };
+      if (!res.ok || !data.settings) {
+        setActionError(data.error || 'មិនអាចរក្សាទុកការកំណត់ហាងបានទេ');
+      } else {
+        setSettingsForm(data.settings);
+        setActionMsg('បានរក្សាទុកការកំណត់ហាង និងបង្ហាញលើទំព័រដើមភ្លាមៗ!');
+        void loadAllAdminData();
+      }
+    } finally {
+      setSettingsBusy(false);
+    }
+  };
+
   if (authLoading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-[#FAF9F6]">
@@ -535,9 +731,10 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
 
   const navItems: Array<{ key: AdminTab; label: string; icon: typeof LayoutDashboard }> = [
     { key: 'overview', label: 'ស្ថិតិហាង (Dashboard)', icon: LayoutDashboard },
-    { key: 'products', label: 'គ្រប់គ្រងផលិតផល', icon: Package },
+    { key: 'products', label: 'ផលិតផល & ប្រភេទទំនិញ', icon: Package },
     { key: 'orders', label: 'ការបញ្ជាទិញ', icon: ShoppingCart },
     { key: 'customers', label: 'អតិថិជន & ទូទាត់', icon: Users },
+    { key: 'coupons', label: 'ប្រូម៉ូសិន & កំណត់ហាង', icon: Tag },
     { key: 'security', label: 'សិទ្ធិ & Backup', icon: Database },
   ];
 
@@ -851,9 +1048,140 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
             </div>
           )}
 
-          {/* TAB 2: PRODUCT MANAGEMENT */}
+          {/* TAB 2: PRODUCT & DYNAMIC CATEGORY MANAGEMENT */}
           {activeTab === 'products' && (
-            <div className="space-y-4">
+            <div className="space-y-5">
+              {/* Dynamic Categories Manager */}
+              <div className="rounded-2xl border border-[#E5E0D5] bg-white p-4 sm:p-5 space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <FolderPlus className="h-4 w-4 text-[#B8860B]" />
+                    <h2 className="text-sm font-semibold text-[#111111]">
+                      គ្រប់គ្រងប្រភេទទំនិញ ({categories.length})
+                    </h2>
+                  </div>
+                  <p className="text-[11px] text-[#6B6559]">
+                    បន្ថែម ឬកែប្រែប្រភេទទំនិញ ហើយវានឹងបង្ហាញលើវេបសាយដោយស្វ័យប្រវត្តិ
+                  </p>
+                </div>
+
+                {canManageProducts && (
+                  <form
+                    onSubmit={handleCreateCategory}
+                    className="grid grid-cols-1 sm:grid-cols-3 gap-2.5"
+                  >
+                    <input
+                      type="text"
+                      required
+                      value={catNameKm}
+                      onChange={(e) => setCatNameKm(e.target.value)}
+                      placeholder="ឈ្មោះប្រភេទ (ខ្មែរ) ឧ. គ្រឿងសម្អាង"
+                      className="h-11 rounded-xl border border-[#E2DDD3] bg-[#FAF9F6] px-3.5 text-xs focus:border-[#111111] focus:bg-white focus:outline-none"
+                    />
+                    <input
+                      type="text"
+                      value={catNameEn}
+                      onChange={(e) => setCatNameEn(e.target.value)}
+                      placeholder="English / Slug (ឧ. Cosmetics)"
+                      className="h-11 rounded-xl border border-[#E2DDD3] bg-[#FAF9F6] px-3.5 text-xs focus:border-[#111111] focus:bg-white focus:outline-none"
+                    />
+                    <button
+                      type="submit"
+                      disabled={catBusy || !catNameKm.trim()}
+                      className="flex h-11 items-center justify-center gap-1.5 rounded-xl bg-[#111111] px-4 text-xs font-semibold text-white hover:bg-[#262626] disabled:opacity-45"
+                    >
+                      <Plus className="h-4 w-4 text-[#C9A227]" />
+                      <span>{catBusy ? 'កំពុងបន្ថែម...' : 'បន្ថែមប្រភេទថ្មី'}</span>
+                    </button>
+                  </form>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                  {categories.map((cat) => {
+                    const count = products.filter((p) => p.category === cat.slug).length;
+                    const isEditing = catEditingId === cat.id;
+
+                    return (
+                      <div
+                        key={cat.id}
+                        className="flex items-center justify-between gap-2 rounded-xl border border-[#ECE8DF] bg-[#FAF9F6] p-3"
+                      >
+                        {isEditing ? (
+                          <div className="flex-1 space-y-1.5">
+                            <input
+                              type="text"
+                              value={catEditNameKm}
+                              onChange={(e) => setCatEditNameKm(e.target.value)}
+                              className="h-9 w-full rounded-lg border border-[#E2DDD3] bg-white px-2.5 text-xs"
+                            />
+                            <div className="flex gap-1.5">
+                              <input
+                                type="text"
+                                value={catEditNameEn}
+                                onChange={(e) => setCatEditNameEn(e.target.value)}
+                                placeholder="English"
+                                className="h-9 flex-1 rounded-lg border border-[#E2DDD3] bg-white px-2.5 text-xs"
+                              />
+                              <button
+                                type="button"
+                                aria-label="រក្សាទុក"
+                                onClick={() => void handleSaveEditCategory(cat.id)}
+                                className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#111111] text-white"
+                              >
+                                <Check className="h-3.5 w-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                aria-label="បោះបង់"
+                                onClick={() => setCatEditingId(null)}
+                                className="flex h-9 w-9 items-center justify-center rounded-lg border border-[#E2DDD3] bg-white"
+                              >
+                                <X className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <>
+                            <div className="min-w-0">
+                              <p className="text-xs font-semibold text-[#111111] truncate">
+                                {cat.nameKm}
+                              </p>
+                              <p className="text-[11px] font-mono-num text-[#6B6559] truncate">
+                                {cat.slug} · {count} ផលិតផល
+                              </p>
+                            </div>
+                            {canManageProducts && (
+                              <div className="flex items-center gap-1 shrink-0">
+                                <button
+                                  type="button"
+                                  aria-label="កែប្រែប្រភេទ"
+                                  onClick={() => {
+                                    setCatEditingId(cat.id);
+                                    setCatEditNameKm(cat.nameKm);
+                                    setCatEditNameEn(cat.nameEn || '');
+                                  }}
+                                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-[#E2DDD3] bg-white text-[#111111] hover:border-[#111111]"
+                                >
+                                  <Edit3 className="h-3.5 w-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  aria-label="លុបប្រភេទ"
+                                  onClick={() => void handleDeleteCategory(cat.id)}
+                                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-red-200 bg-white text-red-700 hover:bg-red-50"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
               {/* Mobile Card View */}
               <div className="grid grid-cols-1 gap-3 md:hidden">
                 {products.map((p) => (
@@ -871,7 +1199,7 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
                       </div>
                       <div className="min-w-0 flex-1">
                         <p className="text-xs font-mono-num text-[#6B6559]">
-                          {p.sku} · {CATEGORY_LABELS[p.category]}
+                          {p.sku} · {getCategoryLabel(p.category, categories)}
                         </p>
                         <p className="mt-0.5 text-sm font-semibold text-[#111111] line-clamp-2">
                           {p.name}
@@ -974,7 +1302,9 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
                         <td className="px-4 py-3 font-mono-num text-xs text-[#6B6559]">
                           {p.sku}
                         </td>
-                        <td className="px-4 py-3 text-xs">{CATEGORY_LABELS[p.category]}</td>
+                        <td className="px-4 py-3 text-xs">
+                          {getCategoryLabel(p.category, categories)}
+                        </td>
                         <td className="px-4 py-3 text-right font-mono-num">
                           <span className="font-semibold">
                             ${(p.discountPriceUsd ?? p.priceUsd).toFixed(2)}
@@ -1111,11 +1441,18 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
 
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-3 rounded-xl bg-[#FAF9F6] p-3 text-xs">
                         <div>
-                          <p className="font-semibold text-[#111111]">អតិថិជន</p>
+                          <p className="font-semibold text-[#111111]">
+                            អតិថិជន ({order.deliveryZone === 'province' ? 'តាមខេត្ត' : 'ភ្នំពេញ'})
+                          </p>
                           <p className="mt-0.5 text-[#4A463E]">
                             {order.customerName} · {order.customerPhone}
                           </p>
                           <p className="mt-0.5 text-[#6B6559]">{order.shippingAddress}</p>
+                          {order.couponCode && (
+                            <p className="mt-1 font-mono-num text-emerald-800">
+                              Promo: {order.couponCode} (-${(order.couponDiscountUsd || 0).toFixed(2)})
+                            </p>
+                          )}
                         </div>
                         <div className="space-y-1">
                           <p className="font-semibold text-[#111111]">មុខទំនិញ</p>
@@ -1133,9 +1470,26 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
                       </div>
 
                       <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-                        <span className="text-xs text-[#6B6559]">
-                          ផ្លាស់ប្តូរស្ថានភាពដឹកជញ្ជូន / ការបញ្ជាទិញ៖
-                        </span>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setPrintingOrder(order)}
+                            className="flex h-10 items-center gap-1.5 rounded-xl border border-[#E2DDD3] bg-white px-3 text-xs font-medium text-[#111111] hover:border-[#111111]"
+                          >
+                            <Printer className="h-3.5 w-3.5" />
+                            <span>បោះពុម្ពវិក្កយបត្រ</span>
+                          </button>
+                          {canManageProducts && order.paymentStatus !== 'paid' && (
+                            <button
+                              type="button"
+                              onClick={() => void handleUpdateOrderStatus(order.id, 'paid')}
+                              className="flex h-10 items-center gap-1.5 rounded-xl bg-emerald-700 px-3 text-xs font-semibold text-white hover:bg-emerald-800"
+                            >
+                              <Check className="h-3.5 w-3.5" />
+                              <span>បញ្ជាក់បានទទួលប្រាក់ (Paid)</span>
+                            </button>
+                          )}
+                        </div>
                         <select
                           value={order.orderStatus}
                           onChange={(e) =>
@@ -1235,7 +1589,384 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
             </div>
           )}
 
-          {/* TAB 5: SECURITY, RBAC, TELEGRAM & DATABASE BACKUPS */}
+          {/* TAB 5: PROMO COUPONS & STORE SETTINGS */}
+          {activeTab === 'coupons' && (
+            <div className="space-y-6">
+              {/* Promo Coupons Section */}
+              <div className="rounded-2xl border border-[#E5E0D5] bg-white p-5 space-y-4">
+                <div className="flex items-center gap-2">
+                  <Tag className="h-4 w-4 text-[#B8860B]" />
+                  <h2 className="text-sm font-semibold text-[#111111]">
+                    គ្រប់គ្រងកូដបញ្ចុះតម្លៃ (Promo Coupons)
+                  </h2>
+                </div>
+
+                {canManageProducts && (
+                  <form
+                    onSubmit={handleCreateCoupon}
+                    className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-2.5"
+                  >
+                    <input
+                      type="text"
+                      required
+                      value={couponCode}
+                      onChange={(e) => setCouponCode(e.target.value.toUpperCase())}
+                      placeholder="កូដ (ឧ. SALE15)"
+                      className="h-11 rounded-xl border border-[#E2DDD3] bg-[#FAF9F6] px-3 text-xs font-mono-num uppercase"
+                    />
+                    <select
+                      value={couponType}
+                      onChange={(e) => setCouponType(e.target.value as 'percent' | 'fixed')}
+                      className="h-11 rounded-xl border border-[#E2DDD3] bg-[#FAF9F6] px-3 text-xs"
+                    >
+                      <option value="percent">បញ្ចុះជា % (Percent)</option>
+                      <option value="fixed">បញ្ចុះជា $ (Fixed)</option>
+                    </select>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0.5"
+                      required
+                      value={couponValue}
+                      onChange={(e) => setCouponValue(e.target.value)}
+                      placeholder="ចំនួន (% ឬ $)"
+                      className="h-11 rounded-xl border border-[#E2DDD3] bg-[#FAF9F6] px-3 text-xs font-mono-num"
+                    />
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={couponMinOrder}
+                      onChange={(e) => setCouponMinOrder(e.target.value)}
+                      placeholder="ទិញយ៉ាងតិច ($)"
+                      className="h-11 rounded-xl border border-[#E2DDD3] bg-[#FAF9F6] px-3 text-xs font-mono-num"
+                    />
+                    <input
+                      type="number"
+                      min="0"
+                      value={couponMaxUses}
+                      onChange={(e) => setCouponMaxUses(e.target.value)}
+                      placeholder="ចំនួនប្រើអតិបរមា"
+                      className="h-11 rounded-xl border border-[#E2DDD3] bg-[#FAF9F6] px-3 text-xs font-mono-num"
+                    />
+                    <button
+                      type="submit"
+                      disabled={couponBusy}
+                      className="h-11 rounded-xl bg-[#111111] px-4 text-xs font-semibold text-white hover:bg-[#262626] disabled:opacity-45"
+                    >
+                      {couponBusy ? 'កំពុងបង្កើត...' : 'បង្កើតកូដ'}
+                    </button>
+                  </form>
+                )}
+
+                <div className="divide-y divide-[#F2EFE9]">
+                  {coupons.map((cpn) => (
+                    <div
+                      key={cpn.id}
+                      className="py-3 flex flex-wrap items-center justify-between gap-2 text-xs"
+                    >
+                      <div>
+                        <p className="font-mono-num font-bold text-[#111111]">
+                          {cpn.code}{' '}
+                          <span className="font-normal text-[#9A6F04]">
+                            (-
+                            {cpn.discountType === 'percent'
+                              ? `${cpn.discountValue}%`
+                              : `$${cpn.discountValue}`}
+                            )
+                          </span>
+                        </p>
+                        <p className="text-[11px] text-[#6B6559] font-mono-num">
+                          ទិញចាប់ពី ${cpn.minOrderUsd} · ប្រើបាន {cpn.usedCount}/
+                          {cpn.maxUses || '∞'} ដង
+                        </p>
+                      </div>
+                      {canManageProducts && (
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void handleToggleCouponActive(cpn)}
+                            className={`h-9 rounded-lg border px-3 text-xs font-medium ${
+                              cpn.active
+                                ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                                : 'border-neutral-200 bg-neutral-100 text-neutral-600'
+                            }`}
+                          >
+                            {cpn.active ? 'សកម្ម' : 'បានបិទ'}
+                          </button>
+                          <button
+                            type="button"
+                            aria-label="លុបកូដ"
+                            onClick={() => void handleDeleteCoupon(cpn.id)}
+                            className="flex h-9 w-9 items-center justify-center rounded-lg border border-red-200 text-red-700 hover:bg-red-50"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Storefront Settings Editor */}
+              {settingsForm && (
+                <form
+                  onSubmit={handleSaveSettings}
+                  className="rounded-2xl border border-[#E5E0D5] bg-white p-5 space-y-4"
+                >
+                  <div className="flex items-center gap-2">
+                    <Settings className="h-4 w-4 text-[#B8860B]" />
+                    <h2 className="text-sm font-semibold text-[#111111]">
+                      ការកំណត់ហាង Banner តម្លៃដឹកជញ្ជូន & អត្រាប្តូរប្រាក់
+                    </h2>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5 text-xs">
+                    <div>
+                      <label className="block font-medium text-[#4A463E] mb-1">ឈ្មោះហាង</label>
+                      <input
+                        type="text"
+                        value={settingsForm.shopName}
+                        onChange={(e) =>
+                          setSettingsForm({ ...settingsForm, shopName: e.target.value })
+                        }
+                        className="h-11 w-full rounded-xl border border-[#E2DDD3] bg-[#FAF9F6] px-3"
+                      />
+                    </div>
+                    <div>
+                      <label className="block font-medium text-[#4A463E] mb-1">
+                        លេខទូរស័ព្ទទំនាក់ទំនង
+                      </label>
+                      <input
+                        type="text"
+                        value={settingsForm.contactPhone}
+                        onChange={(e) =>
+                          setSettingsForm({ ...settingsForm, contactPhone: e.target.value })
+                        }
+                        className="h-11 w-full rounded-xl border border-[#E2DDD3] bg-[#FAF9F6] px-3 font-mono-num"
+                      />
+                    </div>
+                    <div>
+                      <label className="block font-medium text-[#4A463E] mb-1">
+                        អាសយដ្ឋានហាង
+                      </label>
+                      <input
+                        type="text"
+                        value={settingsForm.contactAddress}
+                        onChange={(e) =>
+                          setSettingsForm({ ...settingsForm, contactAddress: e.target.value })
+                        }
+                        className="h-11 w-full rounded-xl border border-[#E2DDD3] bg-[#FAF9F6] px-3"
+                      />
+                    </div>
+
+                    <div className="sm:col-span-2 lg:col-span-3">
+                      <label className="block font-medium text-[#4A463E] mb-1">
+                        របារសារផ្សព្វផ្សាយខាងលើ (Announcement Strip - ទុកទទេដើម្បីបិទ)
+                      </label>
+                      <input
+                        type="text"
+                        value={settingsForm.announcementText}
+                        onChange={(e) =>
+                          setSettingsForm({ ...settingsForm, announcementText: e.target.value })
+                        }
+                        className="h-11 w-full rounded-xl border border-[#E2DDD3] bg-[#FAF9F6] px-3"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block font-medium text-[#4A463E] mb-1">
+                        Hero Eyebrow Text
+                      </label>
+                      <input
+                        type="text"
+                        value={settingsForm.heroEyebrow}
+                        onChange={(e) =>
+                          setSettingsForm({ ...settingsForm, heroEyebrow: e.target.value })
+                        }
+                        className="h-11 w-full rounded-xl border border-[#E2DDD3] bg-[#FAF9F6] px-3"
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="block font-medium text-[#4A463E] mb-1">
+                        ចំណងជើងធំ Hero Banner
+                      </label>
+                      <input
+                        type="text"
+                        value={settingsForm.heroTitle}
+                        onChange={(e) =>
+                          setSettingsForm({ ...settingsForm, heroTitle: e.target.value })
+                        }
+                        className="h-11 w-full rounded-xl border border-[#E2DDD3] bg-[#FAF9F6] px-3"
+                      />
+                    </div>
+                    <div className="sm:col-span-2 lg:col-span-3">
+                      <label className="block font-medium text-[#4A463E] mb-1">
+                        អត្ថបទពណ៌នា Hero Banner
+                      </label>
+                      <input
+                        type="text"
+                        value={settingsForm.heroSubtitle}
+                        onChange={(e) =>
+                          setSettingsForm({ ...settingsForm, heroSubtitle: e.target.value })
+                        }
+                        className="h-11 w-full rounded-xl border border-[#E2DDD3] bg-[#FAF9F6] px-3"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block font-medium text-[#4A463E] mb-1">
+                        អត្រាប្តូរប្រាក់ (1 USD = ? ៛)
+                      </label>
+                      <input
+                        type="number"
+                        min="1000"
+                        value={settingsForm.khrRate}
+                        onChange={(e) =>
+                          setSettingsForm({
+                            ...settingsForm,
+                            khrRate: Number(e.target.value || 4100),
+                          })
+                        }
+                        className="h-11 w-full rounded-xl border border-[#E2DDD3] bg-[#FAF9F6] px-3 font-mono-num"
+                      />
+                    </div>
+                    <div>
+                      <label className="block font-medium text-[#4A463E] mb-1">
+                        ដឹកជញ្ជូនឥតគិតថ្លៃចាប់ពី ($)
+                      </label>
+                      <input
+                        type="number"
+                        step="0.5"
+                        min="0"
+                        value={settingsForm.freeShippingThresholdUsd}
+                        onChange={(e) =>
+                          setSettingsForm({
+                            ...settingsForm,
+                            freeShippingThresholdUsd: Number(e.target.value || 0),
+                          })
+                        }
+                        className="h-11 w-full rounded-xl border border-[#E2DDD3] bg-[#FAF9F6] px-3 font-mono-num"
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block font-medium text-[#4A463E] mb-1">
+                          ភ្នំពេញ ($)
+                        </label>
+                        <input
+                          type="number"
+                          step="0.25"
+                          min="0"
+                          value={settingsForm.phnomPenhShippingUsd}
+                          onChange={(e) =>
+                            setSettingsForm({
+                              ...settingsForm,
+                              phnomPenhShippingUsd: Number(e.target.value || 0),
+                            })
+                          }
+                          className="h-11 w-full rounded-xl border border-[#E2DDD3] bg-[#FAF9F6] px-3 font-mono-num"
+                        />
+                      </div>
+                      <div>
+                        <label className="block font-medium text-[#4A463E] mb-1">
+                          តាមខេត្ត ($)
+                        </label>
+                        <input
+                          type="number"
+                          step="0.25"
+                          min="0"
+                          value={settingsForm.provinceShippingUsd}
+                          onChange={(e) =>
+                            setSettingsForm({
+                              ...settingsForm,
+                              provinceShippingUsd: Number(e.target.value || 0),
+                            })
+                          }
+                          className="h-11 w-full rounded-xl border border-[#E2DDD3] bg-[#FAF9F6] px-3 font-mono-num"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="sm:col-span-2 lg:col-span-3 pt-2 border-t border-[#F2EFE9]">
+                      <p className="font-semibold text-[#005B7F] mb-2">
+                        ព័ត៌មានគណនី ABA Bank របស់ហាង (បង្ហាញពេលអតិថិជនទូទាត់)
+                      </p>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                        <div>
+                          <label className="block font-medium text-[#4A463E] mb-1">
+                            ឈ្មោះគណនី ABA
+                          </label>
+                          <input
+                            type="text"
+                            value={settingsForm.abaAccountName}
+                            onChange={(e) =>
+                              setSettingsForm({ ...settingsForm, abaAccountName: e.target.value })
+                            }
+                            className="h-11 w-full rounded-xl border border-[#E2DDD3] bg-[#FAF9F6] px-3 font-mono-num"
+                          />
+                        </div>
+                        <div>
+                          <label className="block font-medium text-[#4A463E] mb-1">
+                            លេខសម្គាល់ (ABA ID)
+                          </label>
+                          <input
+                            type="text"
+                            value={settingsForm.abaAccountId}
+                            onChange={(e) =>
+                              setSettingsForm({ ...settingsForm, abaAccountId: e.target.value })
+                            }
+                            className="h-11 w-full rounded-xl border border-[#E2DDD3] bg-[#FAF9F6] px-3 font-mono-num"
+                          />
+                        </div>
+                        <div>
+                          <label className="block font-medium text-[#4A463E] mb-1">
+                            លេខគណនី ($) USD
+                          </label>
+                          <input
+                            type="text"
+                            value={settingsForm.abaAccountUsd}
+                            onChange={(e) =>
+                              setSettingsForm({ ...settingsForm, abaAccountUsd: e.target.value })
+                            }
+                            className="h-11 w-full rounded-xl border border-[#E2DDD3] bg-[#FAF9F6] px-3 font-mono-num"
+                          />
+                        </div>
+                        <div>
+                          <label className="block font-medium text-[#4A463E] mb-1">
+                            លេខគណនី (៛) KHR
+                          </label>
+                          <input
+                            type="text"
+                            value={settingsForm.abaAccountKhr}
+                            onChange={(e) =>
+                              setSettingsForm({ ...settingsForm, abaAccountKhr: e.target.value })
+                            }
+                            className="h-11 w-full rounded-xl border border-[#E2DDD3] bg-[#FAF9F6] px-3 font-mono-num"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {canManageProducts && (
+                    <div className="flex justify-end pt-2">
+                      <button
+                        type="submit"
+                        disabled={settingsBusy}
+                        className="h-11 rounded-xl bg-[#111111] px-6 text-xs font-semibold text-white hover:bg-[#262626] disabled:opacity-45"
+                      >
+                        {settingsBusy ? 'កំពុងរក្សាទុក...' : 'រក្សាទុកការកំណត់ហាង'}
+                      </button>
+                    </div>
+                  )}
+                </form>
+              )}
+            </div>
+          )}
+
+          {/* TAB 6: SECURITY, RBAC, TELEGRAM & DATABASE BACKUPS */}
           {activeTab === 'security' && (
             <div className="space-y-6">
               {/* Integration Status & Telegram Test */}
@@ -1433,8 +2164,10 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
         key={editingProduct?.id || (productModalOpen ? 'new' : 'closed')}
         open={productModalOpen}
         editingProduct={editingProduct}
+        categories={categories}
         authToken={authToken}
         onClose={() => setProductModalOpen(false)}
+        onCategoryCreated={(cat) => setCategories((prev) => [...prev, cat])}
         onSaved={() => {
           setActionMsg(
             editingProduct
@@ -1444,6 +2177,97 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
           void loadAllAdminData();
         }}
       />
+
+      {/* Printable Order Receipt Modal */}
+      {printingOrder && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 print:static print:bg-white print:p-0"
+          onClick={() => setPrintingOrder(null)}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl space-y-4 print:shadow-none print:max-w-full"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-[#ECE8DF] pb-3">
+              <div>
+                <h3 className="text-base font-bold text-[#111111]">
+                  {settingsForm?.shopName || 'ឧត្តម Shop'} — វិក្កយបត្រ
+                </h3>
+                <p className="text-xs font-mono-num text-[#6B6559]">
+                  {printingOrder.orderNumber} · {formatDateTimeKm(printingOrder.createdAt)}
+                </p>
+              </div>
+              <button
+                type="button"
+                aria-label="បិទ"
+                onClick={() => setPrintingOrder(null)}
+                className="flex h-9 w-9 items-center justify-center rounded-full hover:bg-[#FAF9F6] print:hidden"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="text-xs space-y-1 text-[#4A463E]">
+              <p>
+                អតិថិជន៖ <b className="text-[#111111]">{printingOrder.customerName}</b>
+              </p>
+              <p>ទូរស័ព្ទ៖ {printingOrder.customerPhone}</p>
+              <p>
+                ដឹកជញ្ជូន ({printingOrder.deliveryZone === 'province' ? 'តាមខេត្ត' : 'ភ្នំពេញ'})៖{' '}
+                {printingOrder.shippingAddress}
+              </p>
+            </div>
+
+            <div className="border-t border-b border-[#ECE8DF] py-3 space-y-1.5 text-xs">
+              {printingOrder.items.map((item, idx) => (
+                <div key={idx} className="flex justify-between">
+                  <span className="pr-2">
+                    {item.name} × {item.quantity}
+                  </span>
+                  <span className="font-mono-num shrink-0">${item.lineTotalUsd.toFixed(2)}</span>
+                </div>
+              ))}
+              {printingOrder.couponCode && (
+                <div className="flex justify-between text-emerald-800">
+                  <span>កូដបញ្ចុះតម្លៃ ({printingOrder.couponCode})</span>
+                  <span className="font-mono-num">
+                    -${(printingOrder.couponDiscountUsd || 0).toFixed(2)}
+                  </span>
+                </div>
+              )}
+              <div className="flex justify-between text-[#6B6559]">
+                <span>ថ្លៃដឹកជញ្ជូន</span>
+                <span className="font-mono-num">${printingOrder.shippingFeeUsd.toFixed(2)}</span>
+              </div>
+            </div>
+
+            <div className="flex justify-between items-baseline">
+              <span className="text-xs font-semibold">សរុបត្រូវបង់</span>
+              <span className="text-base font-bold font-mono-num">
+                {formatDualMoney(printingOrder.totalUsd, stats?.khrRate || 4100)}
+              </span>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 print:hidden">
+              <button
+                type="button"
+                onClick={() => setPrintingOrder(null)}
+                className="h-10 rounded-xl border border-[#E2DDD3] px-4 text-xs font-medium"
+              >
+                បិទ
+              </button>
+              <button
+                type="button"
+                onClick={() => window.print()}
+                className="flex h-10 items-center gap-1.5 rounded-xl bg-[#111111] px-4 text-xs font-semibold text-white"
+              >
+                <Printer className="h-3.5 w-3.5" />
+                <span>បោះពុម្ព (Print)</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

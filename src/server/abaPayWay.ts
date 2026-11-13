@@ -67,6 +67,7 @@ export interface AbaPurchaseResult {
   configured: boolean;
   checkoutUrl?: string;
   qrString?: string;
+  qrImage?: string;
   abapayDeeplink?: string;
   payload?: Record<string, string>;
   rawError?: string;
@@ -161,12 +162,13 @@ export async function createAbaPayWayPurchase(
     const contentType = response.headers.get('content-type') || '';
     if (contentType.includes('application/json')) {
       const json = (await response.json()) as {
-        status?: { code?: string; message?: string };
+        status?: { code?: string | number; message?: string };
         qrString?: string;
+        qrImage?: string;
         abapay_deeplink?: string;
         checkout_qr_url?: string;
       };
-      if (json.status?.code && json.status.code !== '00') {
+      if (json.status?.code !== undefined && String(json.status.code) !== '00') {
         return {
           configured: true,
           checkoutUrl: config.purchaseUrl,
@@ -178,6 +180,7 @@ export async function createAbaPayWayPurchase(
         configured: true,
         checkoutUrl: config.purchaseUrl,
         qrString: json.qrString,
+        qrImage: json.qrImage,
         abapayDeeplink: json.abapay_deeplink,
         payload,
       };

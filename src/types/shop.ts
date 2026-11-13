@@ -1,8 +1,10 @@
-export type ProductCategory = 'shoes' | 'clothing' | 'bags' | 'watches' | 'accessories';
+export type ProductCategory = string;
 
 export type ProductStatus = 'available' | 'out_of_stock';
 
 export type CurrencyCode = 'USD' | 'KHR';
+
+export type DeliveryZone = 'phnom_penh' | 'province';
 
 export type PaymentMethod = 'aba_payway' | 'aba_khqr';
 
@@ -18,6 +20,49 @@ export type OrderStatus =
   | 'failed';
 
 export type AdminRole = 'super_admin' | 'manager' | 'staff';
+
+export interface Category {
+  id: string;
+  slug: string;
+  nameKm: string;
+  nameEn?: string;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Coupon {
+  id: string;
+  code: string;
+  discountType: 'percent' | 'fixed';
+  discountValue: number;
+  minOrderUsd: number;
+  maxUses: number;
+  usedCount: number;
+  active: boolean;
+  expiresAt?: string | null;
+  createdAt: string;
+}
+
+export interface StoreSettings {
+  shopName: string;
+  heroEyebrow: string;
+  heroTitle: string;
+  heroSubtitle: string;
+  announcementText: string;
+  contactPhone: string;
+  contactAddress: string;
+  telegramContact: string;
+  abaAccountName: string;
+  abaAccountId: string;
+  abaAccountUsd: string;
+  abaAccountKhr: string;
+  khrRate: number;
+  freeShippingThresholdUsd: number;
+  phnomPenhShippingUsd: number;
+  provinceShippingUsd: number;
+  updatedAt: string;
+}
 
 export interface Product {
   id: string;
@@ -66,11 +111,14 @@ export interface Order {
   customerName: string;
   customerPhone: string;
   shippingAddress: string;
+  deliveryZone: DeliveryZone;
   notes?: string;
   items: OrderItem[];
   subtotalUsd: number;
   shippingFeeUsd: number;
   discountUsd: number;
+  couponCode?: string;
+  couponDiscountUsd?: number;
   totalUsd: number;
   totalKhr: number;
   currency: CurrencyCode;
@@ -79,6 +127,8 @@ export interface Order {
   orderStatus: OrderStatus;
   abaTranId: string;
   abaQrString?: string;
+  abaQrImage?: string;
+  abaDeeplink?: string;
   abaCheckoutUrl?: string;
   abaPayload?: Record<string, string>;
   abaMode: 'live' | 'unconfigured';

@@ -1,5 +1,57 @@
 {
   "entities": {
+    "Category": {
+      "title": "Category",
+      "description": "Dynamic storefront product category managed by Admin",
+      "type": "object",
+      "properties": {
+        "slug": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "nameKm": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "nameEn": { "type": "string", "maxLength": 80 },
+        "sortOrder": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["slug", "nameKm", "sortOrder"]
+    },
+    "Coupon": {
+      "title": "Coupon",
+      "description": "Promotional discount code validated on server",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string", "minLength": 2, "maxLength": 32 },
+        "discountType": { "type": "string", "enum": ["percent", "fixed"] },
+        "discountValue": { "type": "number" },
+        "minOrderUsd": { "type": "number" },
+        "maxUses": { "type": "integer" },
+        "usedCount": { "type": "integer" },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["code", "discountType", "discountValue", "active"]
+    },
+    "StoreSettings": {
+      "title": "StoreSettings",
+      "description": "Shop storefront configuration, ABA bank info, delivery fees, and contact info",
+      "type": "object",
+      "properties": {
+        "shopName": { "type": "string", "maxLength": 100 },
+        "heroTitle": { "type": "string", "maxLength": 200 },
+        "heroSubtitle": { "type": "string", "maxLength": 400 },
+        "announcementText": { "type": "string", "maxLength": 200 },
+        "contactPhone": { "type": "string", "maxLength": 60 },
+        "contactAddress": { "type": "string", "maxLength": 200 },
+        "abaAccountName": { "type": "string", "maxLength": 100 },
+        "abaAccountId": { "type": "string", "maxLength": 40 },
+        "abaAccountUsd": { "type": "string", "maxLength": 40 },
+        "abaAccountKhr": { "type": "string", "maxLength": 40 },
+        "khrRate": { "type": "integer" },
+        "freeShippingThresholdUsd": { "type": "number" },
+        "phnomPenhShippingUsd": { "type": "number" },
+        "provinceShippingUsd": { "type": "number" }
+      },
+      "required": ["shopName", "khrRate", "freeShippingThresholdUsd"]
+    },
     "Product": {
       "title": "Product",
       "description": "Catalog product sold in Oudom Shop",
@@ -7,10 +59,7 @@
       "properties": {
         "sku": { "type": "string", "minLength": 2, "maxLength": 64 },
         "name": { "type": "string", "minLength": 1, "maxLength": 160 },
-        "category": {
-          "type": "string",
-          "enum": ["shoes", "clothing", "bags", "watches", "accessories"]
-        },
+        "category": { "type": "string", "minLength": 1, "maxLength": 64 },
         "priceUsd": { "type": "number" },
         "discountPriceUsd": { "type": "number" },
         "stock": { "type": "integer" },
@@ -38,9 +87,11 @@
         "customerName": { "type": "string", "minLength": 1, "maxLength": 120 },
         "customerPhone": { "type": "string", "minLength": 6, "maxLength": 32 },
         "shippingAddress": { "type": "string", "minLength": 3, "maxLength": 400 },
+        "deliveryZone": { "type": "string", "enum": ["phnom_penh", "province"] },
         "subtotalUsd": { "type": "number" },
         "shippingFeeUsd": { "type": "number" },
         "discountUsd": { "type": "number" },
+        "couponCode": { "type": "string", "maxLength": 32 },
         "totalUsd": { "type": "number" },
         "totalKhr": { "type": "integer" },
         "currency": { "type": "string", "enum": ["USD", "KHR"] },
@@ -146,6 +197,18 @@
     }
   },
   "firestore": {
+    "/categories/{categoryId}": {
+      "schema": { "$ref": "#/entities/Category" },
+      "description": "Dynamic product categories managed by Admin"
+    },
+    "/coupons/{couponId}": {
+      "schema": { "$ref": "#/entities/Coupon" },
+      "description": "Promotional discount coupons managed by Admin"
+    },
+    "/settings/{settingId}": {
+      "schema": { "$ref": "#/entities/StoreSettings" },
+      "description": "Storefront configuration and shipping rules"
+    },
     "/products/{productId}": {
       "schema": { "$ref": "#/entities/Product" },
       "description": "Public storefront product catalog; writable only by verified admins"

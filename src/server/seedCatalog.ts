@@ -1,6 +1,27 @@
 import bcrypt from 'bcryptjs';
-import { mutateDb, newId, readDb } from './db.ts';
-import type { Product } from '../types/shop.ts';
+import { DEFAULT_STORE_SETTINGS, mutateDb, newId, readDb } from './db.ts';
+import type { Category, Coupon, Product } from '../types/shop.ts';
+
+const INITIAL_CATEGORIES: Array<Omit<Category, 'id' | 'createdAt' | 'updatedAt'>> = [
+  { slug: 'shoes', nameKm: 'ស្បែកជើង', nameEn: 'Shoes', sortOrder: 1 },
+  { slug: 'clothing', nameKm: 'សម្លៀកបំពាក់', nameEn: 'Clothing', sortOrder: 2 },
+  { slug: 'bags', nameKm: 'កាបូប', nameEn: 'Bags', sortOrder: 3 },
+  { slug: 'watches', nameKm: 'នាឡិកា', nameEn: 'Watches', sortOrder: 4 },
+  { slug: 'accessories', nameKm: 'សម្ភារៈប្រើប្រាស់', nameEn: 'Accessories', sortOrder: 5 },
+];
+
+const INITIAL_COUPONS: Array<Omit<Coupon, 'id' | 'createdAt'>> = [
+  {
+    code: 'OUDOM10',
+    discountType: 'percent',
+    discountValue: 10,
+    minOrderUsd: 30,
+    maxUses: 500,
+    usedCount: 0,
+    active: true,
+    expiresAt: null,
+  },
+];
 
 const INITIAL_PRODUCTS: Array<Omit<Product, 'id' | 'createdAt' | 'updatedAt'>> = [
   {
@@ -97,13 +118,45 @@ export async function ensureInitialDataSeeded(): Promise<void> {
   bootstrapped = true;
 
   const state = await readDb();
-  if (state.products.length === 0 || state.admin_accounts.length === 0) {
+  const needsSeed =
+    state.categories.length === 0 ||
+    state.products.length === 0 ||
+    state.admin_accounts.length === 0 ||
+    state.coupons.length === 0;
+
+  if (needsSeed) {
     const username = process.env.ADMIN_USERNAME?.trim() || 'oudom_admin';
     const rawPassword = process.env.ADMIN_PASSWORD?.trim() || 'OudomShop@2026';
     const passwordHash = await bcrypt.hash(rawPassword, 12);
 
     await mutateDb((db) => {
       const now = new Date().toISOString();
+
+      if (db.categories.length === 0) {
+        for (const cat of INITIAL_CATEGORIES) {
+          db.categories.push({
+            id: newId('cat'),
+            ...cat,
+            createdAt: now,
+            updatedAt: now,
+          });
+        }
+      }
+
+      if (db.coupons.length === 0) {
+        for (const c of INITIAL_COUPONS) {
+          db.coupons.push({
+            id: newId('cpn'),
+            ...c,
+            createdAt: now,
+          });
+        }
+      }
+
+      if (!db.settings?.shopName) {
+        db.settings = { ...DEFAULT_STORE_SETTINGS, updatedAt: now };
+      }
+
       if (db.products.length === 0) {
         for (const item of INITIAL_PRODUCTS) {
           db.products.push({

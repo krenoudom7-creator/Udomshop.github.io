@@ -18,23 +18,24 @@ import { isTelegramConfigured, sendOrderTelegramNotification, sendRawTelegramMes
 import type {
   AdminRole,
   BackupSnapshot,
+  Category,
+  Coupon,
   CurrencyCode,
   DashboardStats,
+  DeliveryZone,
   Order,
   OrderItem,
   OrderStatus,
   PaymentMethod,
   Product,
   ProductCategory,
+  StoreSettings,
 } from './src/types/shop.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = Number(process.env.PORT || 3000);
-const KHR_RATE = Number(process.env.KHR_EXCHANGE_RATE || 4100);
-const FREE_SHIPPING_THRESHOLD_USD = 50;
-const STANDARD_SHIPPING_FEE_USD = 2.0;
 
 const SESSION_SECRET =
   process.env.SESSION_SECRET?.trim() ||
@@ -106,6 +107,41 @@ function requireRole(allowedRoles: AdminRole[]) {
     }
     next();
   };
+}
+
+function evaluateCoupon(
+  coupons: Coupon[],
+  rawCode: string | undefined,
+  subtotalUsd: number
+): { valid: boolean; coupon?: Coupon; discountUsd: number; error?: string } {
+  const code = String(rawCode || '').trim().toUpperCase();
+  if (!code) return { valid: false, discountUsd: 0 };
+
+  const coupon = coupons.find((c) => c.code === code);
+  if (!coupon || !coupon.active) {
+    return { valid: false, discountUsd: 0, error: 'កូដបញ្ចុះតម្លៃមិនត្រឹមត្រូវ ឬត្រូវបានបិទ' };
+  }
+  if (coupon.expiresAt && new Date(coupon.expiresAt).getTime() < Date.now()) {
+    return { valid: false, discountUsd: 0, error: 'កូដបញ្ចុះតម្លៃនេះផុតកំណត់ហើយ' };
+  }
+  if (coupon.maxUses > 0 && coupon.usedCount >= coupon.maxUses) {
+    return { valid: false, discountUsd: 0, error: 'កូដបញ្ចុះតម្លៃនេះត្រូវបានប្រើអស់ចំនួនកំណត់ហើយ' };
+  }
+  if (subtotalUsd < coupon.minOrderUsd) {
+    return {
+      valid: false,
+      discountUsd: 0,
+      error: `កូដនេះតម្រូវឱ្យទិញចាប់ពី $${coupon.minOrderUsd.toFixed(2)} ឡើងទៅ`,
+    };
+  }
+
+  const rawDiscount =
+    coupon.discountType === 'percent'
+      ? (subtotalUsd * coupon.discountValue) / 100
+      : coupon.discountValue;
+
+  const discountUsd = Number(Math.min(subtotalUsd, Math.max(0, rawDiscount)).toFixed(2));
+  return { valid: true, coupon, discountUsd };
 }
 
 async function runPeriodicBackupIfNeeded(
@@ -248,19 +284,57 @@ async function startServer() {
     limits: { fileSize: 6 * 1024 * 1024 },
   });
 
-  // Public storefront config
+  // Public storefront config, categories & settings
   app.get('/api/config/public', async (_req, res) => {
     await ensureInitialDataSeeded();
+    const db = await readDb();
+    const categories = [...db.categories].sort((a, b) => a.sortOrder - b.sortOrder);
     res.json({
-      khrRate: KHR_RATE,
-      freeShippingThresholdUsd: FREE_SHIPPING_THRESHOLD_USD,
-      standardShippingFeeUsd: STANDARD_SHIPPING_FEE_USD,
+      khrRate: db.settings.khrRate,
+      freeShippingThresholdUsd: db.settings.freeShippingThresholdUsd,
+      standardShippingFeeUsd: db.settings.phnomPenhShippingUsd,
+      phnomPenhShippingUsd: db.settings.phnomPenhShippingUsd,
+      provinceShippingUsd: db.settings.provinceShippingUsd,
+      settings: db.settings,
+      categories,
       abaConfigured: Boolean(getAbaConfig()),
       telegramConfigured: isTelegramConfigured(),
     });
   });
 
-  // Public: list products
+  // Public: list dynamic categories
+  app.get('/api/categories', async (_req, res) => {
+    await ensureInitialDataSeeded();
+    const db = await readDb();
+    const categories = [...db.categories].sort((a, b) => a.sortOrder - b.sortOrder);
+    res.json({ categories });
+  });
+
+  // Public: validate promo coupon code
+  app.post('/api/coupons/validate', async (req, res) => {
+    try {
+      await ensureInitialDataSeeded();
+      const code = String(req.body?.code || '').trim().toUpperCase();
+      const subtotalUsd = Number(req.body?.subtotalUsd || 0);
+      const db = await readDb();
+      const check = evaluateCoupon(db.coupons, code, subtotalUsd);
+      if (!check.valid || !check.coupon) {
+        return res.status(400).json({ error: check.error || 'កូដបញ្ចុះតម្លៃមិនត្រឹមត្រូវទេ' });
+      }
+      res.json({
+        coupon: {
+          code: check.coupon.code,
+          discountType: check.coupon.discountType,
+          discountValue: check.coupon.discountValue,
+          discountUsd: check.discountUsd,
+        },
+      });
+    } catch {
+      res.status(500).json({ error: 'មិនអាចផ្ទៀងផ្ទាត់កូដបញ្ចុះតម្លៃបានទេ' });
+    }
+  });
+
+  // Public: list products (with dynamic categories & sorting)
   app.get('/api/products', async (req, res) => {
     try {
       await ensureInitialDataSeeded();
@@ -270,6 +344,7 @@ async function startServer() {
       const category = String(req.query.category || '').trim();
       const search = String(req.query.search || '').trim().toLowerCase();
       const filter = String(req.query.filter || '').trim();
+      const sort = String(req.query.sort || '').trim();
 
       if (category && category !== 'all') {
         items = items.filter((p) => p.category === category);
@@ -292,6 +367,19 @@ async function startServer() {
             p.sku.toLowerCase().includes(search) ||
             p.description.toLowerCase().includes(search)
         );
+      }
+
+      const activePrice = (p: Product) =>
+        p.discountPriceUsd !== null && p.discountPriceUsd < p.priceUsd
+          ? p.discountPriceUsd
+          : p.priceUsd;
+
+      if (sort === 'price_asc') {
+        items.sort((a, b) => activePrice(a) - activePrice(b));
+      } else if (sort === 'price_desc') {
+        items.sort((a, b) => activePrice(b) - activePrice(a));
+      } else if (sort === 'bestselling') {
+        items.sort((a, b) => (b.soldCount || 0) - (a.soldCount || 0));
       }
 
       res.json({ products: items });
@@ -319,7 +407,7 @@ async function startServer() {
     }
   });
 
-  // Public: Create Order & Initiate ABA PayWay
+  // Public: Create Order & Initiate ABA PayWay (supports Delivery Zone + Coupon Code)
   app.post('/api/orders', async (req, res) => {
     try {
       await ensureInitialDataSeeded();
@@ -327,6 +415,8 @@ async function startServer() {
         customerName?: string;
         customerPhone?: string;
         shippingAddress?: string;
+        deliveryZone?: DeliveryZone;
+        couponCode?: string;
         notes?: string;
         currency?: CurrencyCode;
         paymentMethod?: PaymentMethod;
@@ -341,6 +431,8 @@ async function startServer() {
       const customerName = String(body.customerName || '').trim();
       const customerPhone = String(body.customerPhone || '').trim();
       const shippingAddress = String(body.shippingAddress || '').trim();
+      const deliveryZone: DeliveryZone =
+        body.deliveryZone === 'province' ? 'province' : 'phnom_penh';
       const notes = String(body.notes || '').trim().slice(0, 300);
       const currency: CurrencyCode = body.currency === 'KHR' ? 'KHR' : 'USD';
       const paymentMethod: PaymentMethod =
@@ -363,7 +455,7 @@ async function startServer() {
       const db = await readDb();
       const orderItems: OrderItem[] = [];
       let subtotalUsd = 0;
-      let discountUsd = 0;
+      let productDiscountUsd = 0;
 
       for (const reqItem of reqItems) {
         const qty = Math.floor(Number(reqItem.quantity));
@@ -392,7 +484,7 @@ async function startServer() {
         const lineTotal = Number((effectivePrice * qty).toFixed(2));
         subtotalUsd += lineTotal;
         if (effectivePrice < product.priceUsd) {
-          discountUsd += (product.priceUsd - effectivePrice) * qty;
+          productDiscountUsd += (product.priceUsd - effectivePrice) * qty;
         }
 
         orderItems.push({
@@ -410,11 +502,29 @@ async function startServer() {
       }
 
       subtotalUsd = Number(subtotalUsd.toFixed(2));
-      discountUsd = Number(discountUsd.toFixed(2));
+      productDiscountUsd = Number(productDiscountUsd.toFixed(2));
+
+      // Validate optional Promo Coupon on Server
+      let appliedCouponCode: string | undefined;
+      let couponDiscountUsd = 0;
+      if (body.couponCode && String(body.couponCode).trim()) {
+        const couponCheck = evaluateCoupon(db.coupons, body.couponCode, subtotalUsd);
+        if (!couponCheck.valid || !couponCheck.coupon) {
+          return res.status(400).json({ error: couponCheck.error || 'កូដបញ្ចុះតម្លៃមិនត្រឹមត្រូវទេ' });
+        }
+        appliedCouponCode = couponCheck.coupon.code;
+        couponDiscountUsd = couponCheck.discountUsd;
+      }
+
+      const netSubtotalUsd = Math.max(0, Number((subtotalUsd - couponDiscountUsd).toFixed(2)));
+      const zoneFee =
+        deliveryZone === 'province'
+          ? db.settings.provinceShippingUsd
+          : db.settings.phnomPenhShippingUsd;
       const shippingFeeUsd =
-        subtotalUsd >= FREE_SHIPPING_THRESHOLD_USD ? 0 : STANDARD_SHIPPING_FEE_USD;
-      const totalUsd = Number((subtotalUsd + shippingFeeUsd).toFixed(2));
-      const totalKhr = Math.round(totalUsd * KHR_RATE);
+        netSubtotalUsd >= db.settings.freeShippingThresholdUsd ? 0 : zoneFee;
+      const totalUsd = Number((netSubtotalUsd + shippingFeeUsd).toFixed(2));
+      const totalKhr = Math.round(totalUsd * db.settings.khrRate);
 
       const now = new Date().toISOString();
       const shortCode = crypto.randomBytes(3).toString('hex').toUpperCase();
@@ -422,13 +532,11 @@ async function startServer() {
       const abaTranId = `OD${Date.now()}${Math.floor(Math.random() * 90 + 10)}`;
       const normalizedPhone = customerPhone.replace(/\s+/g, '');
 
-      // Initiate official ABA PayWay purchase request on server
       const baseUrl = getAppBaseUrl(req);
-      const amountStr = currency === 'KHR' ? String(totalKhr) : totalUsd.toFixed(2);
       const abaResult = await createAbaPayWayPurchase({
         tranId: abaTranId,
-        amount: amountStr,
-        currency,
+        amount: totalUsd.toFixed(2),
+        currency: 'USD',
         items: orderItems,
         shipping: shippingFeeUsd.toFixed(2),
         customerName,
@@ -440,6 +548,11 @@ async function startServer() {
       });
 
       const createdOrder = await mutateDb((state) => {
+        if (appliedCouponCode) {
+          const targetCoupon = state.coupons.find((c) => c.code === appliedCouponCode);
+          if (targetCoupon) targetCoupon.usedCount += 1;
+        }
+
         let cust = state.customers.find((c) => c.phone === normalizedPhone);
         if (!cust) {
           cust = {
@@ -467,11 +580,13 @@ async function startServer() {
           customerName,
           customerPhone: normalizedPhone,
           shippingAddress,
+          deliveryZone,
           notes,
           items: orderItems,
           subtotalUsd,
           shippingFeeUsd,
-          discountUsd,
+          discountUsd: productDiscountUsd,
+          ...(appliedCouponCode ? { couponCode: appliedCouponCode, couponDiscountUsd } : {}),
           totalUsd,
           totalKhr,
           currency,
@@ -480,6 +595,8 @@ async function startServer() {
           orderStatus: 'pending',
           abaTranId,
           ...(abaResult.qrString ? { abaQrString: abaResult.qrString } : {}),
+          ...(abaResult.qrImage ? { abaQrImage: abaResult.qrImage } : {}),
+          ...(abaResult.abapayDeeplink ? { abaDeeplink: abaResult.abapayDeeplink } : {}),
           ...(abaResult.checkoutUrl ? { abaCheckoutUrl: abaResult.checkoutUrl } : {}),
           ...(abaResult.payload ? { abaPayload: abaResult.payload } : {}),
           abaMode: abaResult.configured ? 'live' : 'unconfigured',
@@ -554,6 +671,42 @@ async function startServer() {
     } catch (error) {
       console.error('Order lookup error:', error);
       res.status(500).json({ error: 'មិនអាចស្វែងរកការបញ្ជាទិញបានទេ' });
+    }
+  });
+
+  // Public: Customer reports ABA Bank Transfer reference for Admin verification (does NOT mark Paid)
+  app.post('/api/orders/:id/transfer-note', async (req, res) => {
+    try {
+      const reference = String(req.body?.reference || '').trim().slice(0, 120);
+      const updated = await mutateDb((state) => {
+        const order = state.orders.find((o) => o.id === req.params.id);
+        if (!order) return null;
+        const noteTag = reference ? `[ABA Ref: ${reference}]` : '[អតិថិជនជូនដំណឹងថាបានផ្ទេរប្រាក់ ABA]';
+        order.notes = order.notes ? `${order.notes} · ${noteTag}` : noteTag;
+        order.updatedAt = new Date().toISOString();
+
+        const payment = state.payments.find((p) => p.orderId === order.id);
+        if (payment && payment.status === 'pending') {
+          payment.statusDetail = `Customer reported ABA transfer (${reference || 'no ref'}) — awaiting admin verification`;
+        }
+        return { ...order };
+      });
+
+      if (!updated) {
+        return res.status(404).json({ error: 'រកមិនឃើញការបញ្ជាទិញទេ' });
+      }
+
+      await sendRawTelegramMessage(
+        `💳 អតិថិជនជូនដំណឹងថាបានផ្ទេរប្រាក់ ABA!\nOrder: <code>${updated.orderNumber}</code>\nឈ្មោះ: ${updated.customerName} (${updated.customerPhone})\nចំនួន: $${updated.totalUsd.toFixed(2)} (${updated.totalKhr.toLocaleString('en-US')} ៛)\nកំណត់សម្គាល់: ${reference || 'មិនបានបញ្ចូលលេខយោង'}\nសូមពិនិត្យ ABA App រួចចុច Confirm Paid ក្នុង Admin Dashboard។`
+      );
+
+      res.json({
+        order: updated,
+        message: 'បានផ្ញើដំណឹងទៅហាងរួចរាល់! ក្រុមការងារនឹងផ្ទៀងផ្ទាត់ ABA App របស់លោកអ្នកក្នុងពេលឆាប់ៗ។',
+      });
+    } catch (error) {
+      console.error('Transfer note failed:', error);
+      res.status(500).json({ error: 'មិនអាចផ្ញើដំណឹងផ្ទេរប្រាក់បានទេ' });
     }
   });
 
@@ -849,7 +1002,7 @@ async function startServer() {
         dailyRevenueUsd: Number(dailyRevenueUsd.toFixed(2)),
         monthlyRevenueUsd: Number(monthlyRevenueUsd.toFixed(2)),
         totalRevenueUsd: Number(totalRevenueUsd.toFixed(2)),
-        khrRate: KHR_RATE,
+        khrRate: db.settings.khrRate,
         topProducts,
         salesChart,
         integrations: {
@@ -865,6 +1018,275 @@ async function startServer() {
       res.status(500).json({ error: 'មិនអាចទាញយកស្ថិតិ Dashboard បានទេ' });
     }
   });
+
+  // ---------------- ADMIN DYNAMIC CATEGORIES ----------------
+
+  app.post(
+    '/api/admin/categories',
+    requireAdminAuth,
+    requireRole(['super_admin', 'manager']),
+    async (req, res) => {
+      try {
+        const nameKm = String(req.body?.nameKm || '').trim();
+        const nameEn = String(req.body?.nameEn || '').trim();
+        let slug = String(req.body?.slug || '')
+          .trim()
+          .toLowerCase()
+          .replace(/[^a-z0-9_-]/g, '-')
+          .replace(/-+/g, '-')
+          .replace(/^-|-$/g, '');
+
+        if (!slug && nameEn) {
+          slug = nameEn
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-|-$/g, '');
+        }
+        if (!slug) {
+          slug = `cat-${crypto.randomBytes(3).toString('hex')}`;
+        }
+
+        if (!nameKm || nameKm.length > 80) {
+          return res.status(400).json({ error: 'សូមបញ្ចូលឈ្មោះប្រភេទទំនិញជាភាសាខ្មែរ' });
+        }
+        if (slug === 'all') {
+          return res.status(400).json({ error: 'មិនអាចប្រើ slug "all" បានទេ' });
+        }
+
+        const db = await readDb();
+        if (db.categories.some((c) => c.slug === slug)) {
+          return res.status(409).json({ error: `កូដប្រភេទ "${slug}" មានរួចហើយ` });
+        }
+
+        const now = new Date().toISOString();
+        const sortOrder = Number.isFinite(Number(req.body?.sortOrder))
+          ? Number(req.body.sortOrder)
+          : db.categories.length + 1;
+
+        const category = await mutateDb((state) => {
+          const item: Category = {
+            id: newId('cat'),
+            slug,
+            nameKm,
+            nameEn: nameEn || undefined,
+            sortOrder,
+            createdAt: now,
+            updatedAt: now,
+          };
+          state.categories.push(item);
+          return item;
+        });
+
+        res.status(201).json({ category });
+      } catch (error) {
+        console.error('Create category failed:', error);
+        res.status(500).json({ error: 'មិនអាចបន្ថែមប្រភេទទំនិញបានទេ' });
+      }
+    }
+  );
+
+  app.put(
+    '/api/admin/categories/:id',
+    requireAdminAuth,
+    requireRole(['super_admin', 'manager']),
+    async (req, res) => {
+      try {
+        const nameKm = String(req.body?.nameKm || '').trim();
+        const nameEn = String(req.body?.nameEn || '').trim();
+        const sortOrder = Number(req.body?.sortOrder);
+
+        if (!nameKm) {
+          return res.status(400).json({ error: 'សូមបញ្ចូលឈ្មោះប្រភេទទំនិញ' });
+        }
+
+        const updated = await mutateDb((state) => {
+          const target = state.categories.find((c) => c.id === req.params.id);
+          if (!target) return null;
+          target.nameKm = nameKm;
+          target.nameEn = nameEn || undefined;
+          if (Number.isFinite(sortOrder)) target.sortOrder = sortOrder;
+          target.updatedAt = new Date().toISOString();
+          return { ...target };
+        });
+
+        if (!updated) {
+          return res.status(404).json({ error: 'រកមិនឃើញប្រភេទទំនិញទេ' });
+        }
+        res.json({ category: updated });
+      } catch {
+        res.status(500).json({ error: 'មិនអាចកែប្រែប្រភេទទំនិញបានទេ' });
+      }
+    }
+  );
+
+  app.delete(
+    '/api/admin/categories/:id',
+    requireAdminAuth,
+    requireRole(['super_admin', 'manager']),
+    async (req, res) => {
+      try {
+        const db = await readDb();
+        const target = db.categories.find((c) => c.id === req.params.id);
+        if (!target) {
+          return res.status(404).json({ error: 'រកមិនឃើញប្រភេទទំនិញទេ' });
+        }
+
+        const inUseCount = db.products.filter((p) => p.category === target.slug).length;
+        if (inUseCount > 0) {
+          return res.status(400).json({
+            error: `មិនអាចលុបបានទេ ព្រោះមានផលិតផលចំនួន ${inUseCount} កំពុងប្រើប្រភេទ "${target.nameKm}" នេះ`,
+          });
+        }
+
+        await mutateDb((state) => {
+          state.categories = state.categories.filter((c) => c.id !== req.params.id);
+        });
+        res.json({ ok: true });
+      } catch {
+        res.status(500).json({ error: 'មិនអាចលុបប្រភេទទំនិញបានទេ' });
+      }
+    }
+  );
+
+  // ---------------- ADMIN PROMO COUPONS ----------------
+
+  app.get('/api/admin/coupons', requireAdminAuth, async (_req, res) => {
+    const db = await readDb();
+    res.json({ coupons: db.coupons });
+  });
+
+  app.post(
+    '/api/admin/coupons',
+    requireAdminAuth,
+    requireRole(['super_admin', 'manager']),
+    async (req, res) => {
+      try {
+        const code = String(req.body?.code || '').trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '');
+        const discountType = req.body?.discountType === 'fixed' ? 'fixed' : 'percent';
+        const discountValue = Number(req.body?.discountValue);
+        const minOrderUsd = Math.max(0, Number(req.body?.minOrderUsd || 0));
+        const maxUses = Math.max(0, Math.floor(Number(req.body?.maxUses || 0)));
+
+        if (!code || code.length < 2 || code.length > 32) {
+          return res.status(400).json({ error: 'កូដបញ្ចុះតម្លៃត្រូវមាន ២-៣២ តួអក្សរឡាតាំង ឬលេខ' });
+        }
+        if (!Number.isFinite(discountValue) || discountValue <= 0) {
+          return res.status(400).json({ error: 'ចំនួនបញ្ចុះតម្លៃត្រូវតែធំជាង ០' });
+        }
+        if (discountType === 'percent' && discountValue > 90) {
+          return res.status(400).json({ error: 'ភាគរយបញ្ចុះតម្លៃមិនអាចលើស 90% បានទេ' });
+        }
+
+        const db = await readDb();
+        if (db.coupons.some((c) => c.code === code)) {
+          return res.status(409).json({ error: `កូដ "${code}" មានរួចហើយ` });
+        }
+
+        const coupon = await mutateDb((state) => {
+          const item: Coupon = {
+            id: newId('cpn'),
+            code,
+            discountType,
+            discountValue: Number(discountValue.toFixed(2)),
+            minOrderUsd: Number(minOrderUsd.toFixed(2)),
+            maxUses,
+            usedCount: 0,
+            active: true,
+            expiresAt: req.body?.expiresAt ? String(req.body.expiresAt) : null,
+            createdAt: new Date().toISOString(),
+          };
+          state.coupons.unshift(item);
+          return item;
+        });
+
+        res.status(201).json({ coupon });
+      } catch {
+        res.status(500).json({ error: 'មិនអាចបង្កើតកូដបញ្ចុះតម្លៃបានទេ' });
+      }
+    }
+  );
+
+  app.patch(
+    '/api/admin/coupons/:id',
+    requireAdminAuth,
+    requireRole(['super_admin', 'manager']),
+    async (req, res) => {
+      const updated = await mutateDb((state) => {
+        const target = state.coupons.find((c) => c.id === req.params.id);
+        if (!target) return null;
+        if (typeof req.body?.active === 'boolean') target.active = req.body.active;
+        return { ...target };
+      });
+      if (!updated) return res.status(404).json({ error: 'រកមិនឃើញកូដនេះទេ' });
+      res.json({ coupon: updated });
+    }
+  );
+
+  app.delete(
+    '/api/admin/coupons/:id',
+    requireAdminAuth,
+    requireRole(['super_admin', 'manager']),
+    async (req, res) => {
+      await mutateDb((state) => {
+        state.coupons = state.coupons.filter((c) => c.id !== req.params.id);
+      });
+      res.json({ ok: true });
+    }
+  );
+
+  // ---------------- ADMIN STORE SETTINGS ----------------
+
+  app.get('/api/admin/settings', requireAdminAuth, async (_req, res) => {
+    const db = await readDb();
+    res.json({ settings: db.settings });
+  });
+
+  app.put(
+    '/api/admin/settings',
+    requireAdminAuth,
+    requireRole(['super_admin', 'manager']),
+    async (req, res) => {
+      try {
+        const b = req.body as Partial<StoreSettings>;
+        const settings = await mutateDb((state) => {
+          state.settings = {
+            ...state.settings,
+            shopName: b.shopName !== undefined ? String(b.shopName).trim() || state.settings.shopName : state.settings.shopName,
+            heroEyebrow: b.heroEyebrow !== undefined ? String(b.heroEyebrow).trim() : state.settings.heroEyebrow,
+            heroTitle: b.heroTitle !== undefined ? String(b.heroTitle).trim() : state.settings.heroTitle,
+            heroSubtitle: b.heroSubtitle !== undefined ? String(b.heroSubtitle).trim() : state.settings.heroSubtitle,
+            announcementText: b.announcementText !== undefined ? String(b.announcementText).trim() : state.settings.announcementText,
+            contactPhone: b.contactPhone !== undefined ? String(b.contactPhone).trim() : state.settings.contactPhone,
+            contactAddress: b.contactAddress !== undefined ? String(b.contactAddress).trim() : state.settings.contactAddress,
+            telegramContact: b.telegramContact !== undefined ? String(b.telegramContact).trim() : state.settings.telegramContact,
+            abaAccountName: b.abaAccountName !== undefined ? String(b.abaAccountName).trim() : state.settings.abaAccountName,
+            abaAccountId: b.abaAccountId !== undefined ? String(b.abaAccountId).trim() : state.settings.abaAccountId,
+            abaAccountUsd: b.abaAccountUsd !== undefined ? String(b.abaAccountUsd).trim() : state.settings.abaAccountUsd,
+            abaAccountKhr: b.abaAccountKhr !== undefined ? String(b.abaAccountKhr).trim() : state.settings.abaAccountKhr,
+            khrRate: Number.isFinite(Number(b.khrRate)) && Number(b.khrRate) >= 1000 ? Math.round(Number(b.khrRate)) : state.settings.khrRate,
+            freeShippingThresholdUsd:
+              Number.isFinite(Number(b.freeShippingThresholdUsd)) && Number(b.freeShippingThresholdUsd) >= 0
+                ? Number(Number(b.freeShippingThresholdUsd).toFixed(2))
+                : state.settings.freeShippingThresholdUsd,
+            phnomPenhShippingUsd:
+              Number.isFinite(Number(b.phnomPenhShippingUsd)) && Number(b.phnomPenhShippingUsd) >= 0
+                ? Number(Number(b.phnomPenhShippingUsd).toFixed(2))
+                : state.settings.phnomPenhShippingUsd,
+            provinceShippingUsd:
+              Number.isFinite(Number(b.provinceShippingUsd)) && Number(b.provinceShippingUsd) >= 0
+                ? Number(Number(b.provinceShippingUsd).toFixed(2))
+                : state.settings.provinceShippingUsd,
+            updatedAt: new Date().toISOString(),
+          };
+          return state.settings;
+        });
+
+        res.json({ settings });
+      } catch {
+        res.status(500).json({ error: 'មិនអាចរក្សាទុកការកំណត់ហាងបានទេ' });
+      }
+    }
+  );
 
   // ---------------- ADMIN PRODUCT MANAGEMENT ----------------
 
@@ -884,7 +1306,6 @@ async function startServer() {
           return res.status(400).json({ error: 'គាំទ្រតែរូបភាព JPG, PNG, WebP ឬ AVIF ប៉ុណ្ណោះ' });
         }
 
-        // Attempt Cloud Storage first if IAM is configured, otherwise persist cleanly in permanent media store
         try {
           const bucket = adminStorage.bucket();
           const ext = req.file.mimetype.split('/')[1] || 'webp';
@@ -924,10 +1345,11 @@ async function startServer() {
     requireRole(['super_admin', 'manager']),
     async (req: AdminRequest, res) => {
       try {
+        const db = await readDb();
         const body = req.body as Partial<Product>;
         const name = String(body.name || '').trim();
         const sku = String(body.sku || '').trim().toUpperCase();
-        const category = body.category as ProductCategory;
+        const category = String(body.category || '').trim() as ProductCategory;
         const priceUsd = Number(body.priceUsd);
         const discountPriceUsd =
           body.discountPriceUsd !== null &&
@@ -948,8 +1370,8 @@ async function startServer() {
         if (!sku || sku.length < 2) {
           return res.status(400).json({ error: 'សូមបញ្ចូលលេខកូដ SKU' });
         }
-        if (!['shoes', 'clothing', 'bags', 'watches', 'accessories'].includes(category)) {
-          return res.status(400).json({ error: 'ប្រភេទផលិតផលមិនត្រឹមត្រូវ' });
+        if (!category || !db.categories.some((c) => c.slug === category)) {
+          return res.status(400).json({ error: 'សូមជ្រើសរើសប្រភេទផលិតផលដែលមានក្នុងប្រព័ន្ធ' });
         }
         if (!Number.isFinite(priceUsd) || priceUsd < 0) {
           return res.status(400).json({ error: 'តម្លៃលក់មិនត្រឹមត្រូវ' });
@@ -965,7 +1387,7 @@ async function startServer() {
         }
 
         const now = new Date().toISOString();
-        const product = await mutateDb((db) => {
+        const product = await mutateDb((state) => {
           const item: Product = {
             id: newId('prod'),
             sku,
@@ -985,7 +1407,7 @@ async function startServer() {
             createdAt: now,
             updatedAt: now,
           };
-          db.products.unshift(item);
+          state.products.unshift(item);
           return item;
         });
 
@@ -1012,7 +1434,7 @@ async function startServer() {
         const body = req.body as Partial<Product>;
         const name = body.name !== undefined ? String(body.name).trim() : existing.name;
         const sku = body.sku !== undefined ? String(body.sku).trim().toUpperCase() : existing.sku;
-        const category = (body.category || existing.category) as ProductCategory;
+        const category = String(body.category || existing.category).trim();
         const priceUsd = body.priceUsd !== undefined ? Number(body.priceUsd) : existing.priceUsd;
         const discountPriceUsd =
           body.discountPriceUsd !== undefined
@@ -1031,6 +1453,9 @@ async function startServer() {
 
         if (!name || !sku || !Number.isFinite(priceUsd) || priceUsd < 0) {
           return res.status(400).json({ error: 'ទិន្នន័យផលិតផលមិនត្រឹមត្រូវ' });
+        }
+        if (!db.categories.some((c) => c.slug === category)) {
+          return res.status(400).json({ error: 'ប្រភេទផលិតផលមិនត្រឹមត្រូវ' });
         }
         if (discountPriceUsd !== null && (discountPriceUsd < 0 || discountPriceUsd >= priceUsd)) {
           return res.status(400).json({ error: 'តម្លៃបញ្ចុះតម្លៃត្រូវតែទាបជាងតម្លៃដើម' });
@@ -1361,6 +1786,9 @@ async function startServer() {
         const payload = {
           exportedAt: new Date().toISOString(),
           shop: 'Oudom Shop',
+          categories: db.categories,
+          coupons: db.coupons,
+          settings: db.settings,
           products: db.products,
           orders: db.orders,
           customers: db.customers,
