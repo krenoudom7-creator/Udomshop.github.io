@@ -351,24 +351,43 @@ export function Storefront({ onNavigateAdmin }: StorefrontProps) {
             <button
               type="button"
               onClick={() => scrollToCatalog('all')}
-              className="hover:text-[#111111] transition-colors whitespace-nowrap shrink-0"
+              className={`py-1 transition-colors whitespace-nowrap shrink-0 border-b-2 ${
+                selectedCategory === 'all'
+                  ? 'border-[#C9A227] text-[#111111] font-semibold'
+                  : 'border-transparent hover:text-[#111111]'
+              }`}
             >
               ទំព័រដើម
             </button>
-            {categories.slice(0, 5).map((cat) => (
-              <button
-                key={cat.id}
-                type="button"
-                onClick={() => scrollToCatalog(cat.slug)}
-                className="hover:text-[#111111] transition-colors whitespace-nowrap shrink-0"
-              >
-                {cat.nameKm}
-              </button>
-            ))}
+            {categories.slice(0, 5).map((cat) => {
+              const active = selectedCategory === cat.slug;
+              return (
+                <button
+                  key={cat.id}
+                  type="button"
+                  onClick={() => scrollToCatalog(cat.slug)}
+                  className={`py-1 transition-colors whitespace-nowrap shrink-0 border-b-2 ${
+                    active
+                      ? 'border-[#C9A227] text-[#111111] font-semibold'
+                      : 'border-transparent hover:text-[#111111]'
+                  }`}
+                >
+                  {cat.nameKm}
+                </button>
+              );
+            })}
           </nav>
 
-          {/* Zone 3: Single primary Cart action + Currency toggle */}
+          {/* Zone 3: Desktop Order Lookup + Currency toggle + Primary Cart action */}
           <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setTrackerOpen(true)}
+              className="hidden md:flex h-10 items-center gap-1.5 rounded-lg border border-[#E2DDD3] bg-white px-3 text-xs font-medium text-[#111111] transition hover:border-[#111111] whitespace-nowrap shrink-0"
+            >
+              <PackageSearch className="h-3.5 w-3.5 text-[#B8860B]" />
+              <span>តាមដាន Order</span>
+            </button>
             <button
               type="button"
               onClick={() => setCurrency((c) => (c === 'USD' ? 'KHR' : 'USD'))}
@@ -518,7 +537,7 @@ export function Storefront({ onNavigateAdmin }: StorefrontProps) {
                 </div>
               </div>
 
-              <div className="relative aspect-[16/9] lg:aspect-auto lg:col-span-7 overflow-hidden">
+              <div className="relative aspect-[16/9] lg:aspect-auto lg:min-h-[420px] xl:min-h-[460px] lg:col-span-7 overflow-hidden">
                 <SafeImage
                   src={HERO_IMAGE}
                   alt="ឧត្តម Shop Luxury Collection Showcase"
@@ -539,13 +558,23 @@ export function Storefront({ onNavigateAdmin }: StorefrontProps) {
               <div className="relative flex-1">
                 <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[#6B6559]" />
                 <input
-                  type="search"
+                  type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder="ស្វែងរកផលិតផល ឬ លេខកូដ SKU..."
                   aria-label="ស្វែងរកទំនិញ"
-                  className="h-12 w-full rounded-xl border border-[#E2DDD3] bg-white pl-10 pr-4 text-sm text-[#111111] placeholder:text-[#8A8478] focus:border-[#111111] focus:outline-none"
+                  className="h-12 w-full rounded-xl border border-[#E2DDD3] bg-white pl-10 pr-10 text-sm text-[#111111] placeholder:text-[#8A8478] focus:border-[#111111] focus:outline-none"
                 />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    aria-label="សម្អាតពាក្យស្វែងរក"
+                    onClick={() => setSearchQuery('')}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 flex h-7 w-7 items-center justify-center rounded-full text-[#6B6559] hover:bg-[#FAF9F6] hover:text-[#111111]"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                )}
               </div>
 
               <select
@@ -589,36 +618,43 @@ export function Storefront({ onNavigateAdmin }: StorefrontProps) {
             </div>
           </div>
 
-          {/* Dynamic Horizontal Category Bar */}
-          <div className="mt-4 flex items-center gap-2 overflow-x-auto no-scrollbar pb-1">
-            <button
-              type="button"
-              onClick={() => setSelectedCategory('all')}
-              className={`h-10 rounded-xl border px-4 text-xs sm:text-sm font-medium transition whitespace-nowrap shrink-0 ${
-                selectedCategory === 'all'
-                  ? 'border-[#111111] bg-[#111111] text-white'
-                  : 'border-[#E2DDD3] bg-white text-[#4A463E] hover:border-[#111111]'
-              }`}
-            >
-              ទាំងអស់
-            </button>
-            {categories.map((cat) => {
-              const active = selectedCategory === cat.slug;
-              return (
-                <button
-                  key={cat.id}
-                  type="button"
-                  onClick={() => setSelectedCategory(cat.slug)}
-                  className={`h-10 rounded-xl border px-4 text-xs sm:text-sm font-medium transition whitespace-nowrap shrink-0 ${
-                    active
-                      ? 'border-[#111111] bg-[#111111] text-white'
-                      : 'border-[#E2DDD3] bg-white text-[#4A463E] hover:border-[#111111]'
-                  }`}
-                >
-                  {cat.nameKm}
-                </button>
-              );
-            })}
+          {/* Dynamic Horizontal Category Bar + Desktop Count */}
+          <div className="mt-4 flex items-center justify-between gap-4">
+            <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-1">
+              <button
+                type="button"
+                onClick={() => setSelectedCategory('all')}
+                className={`h-10 rounded-xl border px-4 text-xs sm:text-sm font-medium transition whitespace-nowrap shrink-0 ${
+                  selectedCategory === 'all'
+                    ? 'border-[#111111] bg-[#111111] text-white'
+                    : 'border-[#E2DDD3] bg-white text-[#4A463E] hover:border-[#111111]'
+                }`}
+              >
+                ទាំងអស់
+              </button>
+              {categories.map((cat) => {
+                const active = selectedCategory === cat.slug;
+                return (
+                  <button
+                    key={cat.id}
+                    type="button"
+                    onClick={() => setSelectedCategory(cat.slug)}
+                    className={`h-10 rounded-xl border px-4 text-xs sm:text-sm font-medium transition whitespace-nowrap shrink-0 ${
+                      active
+                        ? 'border-[#111111] bg-[#111111] text-white'
+                        : 'border-[#E2DDD3] bg-white text-[#4A463E] hover:border-[#111111]'
+                    }`}
+                  >
+                    {cat.nameKm}
+                  </button>
+                );
+              })}
+            </div>
+            {!loading && !loadError && (
+              <p className="hidden md:block text-xs font-medium text-[#6B6559] whitespace-nowrap shrink-0">
+                បង្ហាញ <span className="font-mono-num text-[#111111]">{filteredProducts.length}</span> ទំនិញ
+              </p>
+            )}
           </div>
 
           {/* Product States: Loading / Error / Empty / 2-Col Mobile Grid */}

@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import {
   AlertCircle,
   ArrowLeft,
@@ -102,6 +102,23 @@ export function CartCheckoutDrawer({
   const [transferRef, setTransferRef] = useState('');
   const [sendingTransferNote, setSendingTransferNote] = useState(false);
   const [transferNoteSent, setTransferNoteSent] = useState('');
+
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (createdOrder) {
+          setCreatedOrder(null);
+          setStep('cart');
+          setTransferRef('');
+          setTransferNoteSent('');
+        }
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [open, createdOrder, onClose]);
 
   if (!open) return null;
 

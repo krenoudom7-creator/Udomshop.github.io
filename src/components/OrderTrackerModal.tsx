@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { Loader2, PackageCheck, Search, X } from 'lucide-react';
 import type { Order } from '../types/shop.ts';
 import { apiUrl, safeReadJson } from '../utils/api.ts';
@@ -16,6 +16,15 @@ export function OrderTrackerModal({ open, khrRate, onClose }: OrderTrackerModalP
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [order, setOrder] = useState<Order | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [open, onClose]);
 
   if (!open) return null;
 

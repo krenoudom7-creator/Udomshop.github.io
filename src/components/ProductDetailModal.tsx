@@ -1,4 +1,4 @@
-import { useState, type MouseEvent } from 'react';
+import { useEffect, useState, type MouseEvent } from 'react';
 import { Check, Heart, Minus, Plus, Share2, ShoppingBag, X, ZoomIn, ZoomOut } from 'lucide-react';
 import type { Category, CurrencyCode, Product } from '../types/shop.ts';
 import { formatMoney, getCategoryLabel } from '../utils/format.ts';
@@ -37,6 +37,15 @@ export function ProductDetailModal({
   const [zoomed, setZoomed] = useState(false);
   const [origin, setOrigin] = useState({ x: 50, y: 50 });
   const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!product) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [product, onClose]);
 
   if (!product) return null;
 
@@ -122,7 +131,9 @@ export function ProductDetailModal({
         {/* Image Gallery with Zoom */}
         <div className="relative bg-[#EFECE5] lg:col-span-7 flex flex-col justify-center">
           <div
-            className="relative aspect-[4/3] w-full overflow-hidden cursor-zoom-in select-none"
+            className={`relative aspect-[4/3] lg:aspect-auto lg:h-full lg:min-h-[460px] w-full overflow-hidden select-none ${
+              zoomed ? 'cursor-zoom-out' : 'cursor-zoom-in'
+            }`}
             onClick={() => setZoomed((z) => !z)}
             onMouseMove={handleMouseMove}
           >

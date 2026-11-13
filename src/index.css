@@ -10,6 +10,7 @@
   html {
     font-family: var(--font-sans);
     scroll-behavior: smooth;
+    scrollbar-gutter: stable;
     -webkit-tap-highlight-color: transparent;
   }
 
@@ -17,6 +18,13 @@
     overflow-x: hidden;
     background-color: #FAF9F6;
     color: #111111;
+  }
+
+  button:not(:disabled),
+  [role="button"],
+  select,
+  a[href] {
+    cursor: pointer;
   }
 }
 
