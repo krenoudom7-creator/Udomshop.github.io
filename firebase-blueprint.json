@@ -45,6 +45,8 @@
         "abaAccountId": { "type": "string", "maxLength": 40 },
         "abaAccountUsd": { "type": "string", "maxLength": 40 },
         "abaAccountKhr": { "type": "string", "maxLength": 40 },
+        "abaQrUsdImage": { "type": "string", "maxLength": 2000 },
+        "abaQrKhrImage": { "type": "string", "maxLength": 2000 },
         "khrRate": { "type": "integer" },
         "freeShippingThresholdUsd": { "type": "number" },
         "phnomPenhShippingUsd": { "type": "number" },
@@ -95,13 +97,16 @@
         "totalUsd": { "type": "number" },
         "totalKhr": { "type": "integer" },
         "currency": { "type": "string", "enum": ["USD", "KHR"] },
-        "paymentMethod": { "type": "string", "enum": ["aba_payway", "aba_khqr"] },
+        "paymentMethod": { "type": "string", "enum": ["bank_qr", "cod", "aba_payway", "aba_khqr"] },
         "paymentStatus": { "type": "string", "enum": ["pending", "paid", "failed"] },
         "orderStatus": {
           "type": "string",
           "enum": ["pending", "paid", "processing", "shipping", "completed", "cancelled", "failed"]
         },
         "abaTranId": { "type": "string", "maxLength": 64 },
+        "paymentSlipUrl": { "type": "string", "maxLength": 1000 },
+        "paymentReference": { "type": "string", "maxLength": 120 },
+        "paymentSubmittedAt": { "type": "string", "format": "date-time" },
         "userId": { "type": "string", "maxLength": 128 },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }

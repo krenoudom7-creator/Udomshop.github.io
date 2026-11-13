@@ -66,6 +66,8 @@ export const DEFAULT_STORE_SETTINGS: StoreSettings = {
   abaAccountId: '3609517',
   abaAccountUsd: '009 338 762',
   abaAccountKhr: '009 338 764',
+  abaQrUsdImage: '',
+  abaQrKhrImage: '',
   khrRate: Number(process.env.KHR_EXCHANGE_RATE || 4100),
   freeShippingThresholdUsd: 50,
   phnomPenhShippingUsd: 1.5,

@@ -2,7 +2,12 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { Loader2, PackageCheck, Search, X } from 'lucide-react';
 import type { Order } from '../types/shop.ts';
 import { apiUrl, safeReadJson } from '../utils/api.ts';
-import { formatDateTimeKm, formatDualMoney, ORDER_STATUS_LABELS } from '../utils/format.ts';
+import {
+  formatDateTimeKm,
+  formatDualMoney,
+  getPaymentMethodLabel,
+  ORDER_STATUS_LABELS,
+} from '../utils/format.ts';
 
 interface OrderTrackerModalProps {
   open: boolean;
@@ -170,9 +175,23 @@ export function OrderTrackerModal({ open, khrRate, onClose }: OrderTrackerModalP
                 </div>
               ))}
             </div>
-            <div className="border-t border-[#E2DDD3] pt-2 flex justify-between font-semibold text-xs">
-              <span>សរុបត្រូវបង់ ({order.paymentStatus.toUpperCase()})</span>
-              <span className="font-mono-num">{formatDualMoney(order.totalUsd, khrRate)}</span>
+            <div className="border-t border-[#E2DDD3] pt-2 space-y-1 text-xs">
+              <div className="flex justify-between text-[#6B6559]">
+                <span>វិធីទូទាត់</span>
+                <span className="font-medium text-[#111111]">
+                  {getPaymentMethodLabel(order.paymentMethod)}
+                </span>
+              </div>
+              {order.paymentSubmittedAt && (
+                <div className="flex justify-between text-emerald-800">
+                  <span>ភស្តុតាងទូទាត់</span>
+                  <span className="font-medium">បានផ្ញើទៅហាងរួចរាល់</span>
+                </div>
+              )}
+              <div className="flex justify-between font-semibold">
+                <span>សរុបត្រូវបង់ ({order.paymentStatus.toUpperCase()})</span>
+                <span className="font-mono-num">{formatDualMoney(order.totalUsd, khrRate)}</span>
+              </div>
             </div>
           </div>
         )}

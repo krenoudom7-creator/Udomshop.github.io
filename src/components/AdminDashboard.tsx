@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useState, type ChangeEvent, type FormEvent } from 'react';
 import { signInWithPopup } from 'firebase/auth';
 import {
   BarChart3,
@@ -16,6 +16,7 @@ import {
   Package,
   Plus,
   Printer,
+  QrCode,
   RefreshCw,
   Send,
   Settings,
@@ -24,6 +25,7 @@ import {
   Store,
   Tag,
   Trash2,
+  Upload,
   Users,
   X,
 } from 'lucide-react';
@@ -53,9 +55,11 @@ import type {
 } from '../types/shop.ts';
 import { apiUrl, safeReadJson } from '../utils/api.ts';
 import {
+  compressImageToWebP,
   formatDateTimeKm,
   formatDualMoney,
   getCategoryLabel,
+  getPaymentMethodLabel,
   ORDER_STATUS_LABELS,
 } from '../utils/format.ts';
 import { SafeImage } from './SafeImage.tsx';
@@ -126,10 +130,12 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
   const [couponMaxUses, setCouponMaxUses] = useState('100');
   const [couponBusy, setCouponBusy] = useState(false);
   const [settingsBusy, setSettingsBusy] = useState(false);
+  const [qrUploadingField, setQrUploadingField] = useState<'usd' | 'khr' | null>(null);
 
   const [orderStatusFilter, setOrderStatusFilter] = useState<string>('all');
   const [orderSearch, setOrderSearch] = useState('');
   const [printingOrder, setPrintingOrder] = useState<Order | null>(null);
+  const [viewingSlipOrder, setViewingSlipOrder] = useState<Order | null>(null);
 
   // New Admin User Form (Super Admin only)
   const [newUsername, setNewUsername] = useState('');
@@ -581,6 +587,42 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
     if (res.ok) {
       setActionMsg('បានលុបកូដបញ្ចុះតម្លៃរួចរាល់');
       void loadAllAdminData();
+    }
+  };
+
+  const handleUploadQrImage = async (target: 'usd' | 'khr', e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !settingsForm) return;
+    setActionError('');
+    setActionMsg('');
+    setQrUploadingField(target);
+    try {
+      const optimized = await compressImageToWebP(file, 900);
+      const formData = new FormData();
+      formData.append('image', optimized);
+      const res = await fetch(apiUrl('/api/admin/upload'), {
+        method: 'POST',
+        headers: authHeaders(),
+        credentials: 'include',
+        body: formData,
+      });
+      const data = await safeReadJson<{ imageUrl?: string; error?: string }>(res);
+      if (!data || !res.ok || !data.imageUrl) {
+        setActionError(data?.error || 'បរាជ័យក្នុងការ Upload រូបភាព KHQR');
+        return;
+      }
+      setSettingsForm({
+        ...settingsForm,
+        ...(target === 'usd'
+          ? { abaQrUsdImage: data.imageUrl }
+          : { abaQrKhrImage: data.imageUrl }),
+      });
+      setActionMsg('បាន Upload រូបភាព KHQR រួចរាល់ — សូមចុច «រក្សាទុកការកំណត់ហាង» ដើម្បីអនុវត្តលើហាង!');
+    } catch {
+      setActionError('មានបញ្ហាក្នុងការ Upload រូបភាព KHQR');
+    } finally {
+      setQrUploadingField(null);
+      e.target.value = '';
     }
   };
 
@@ -1443,7 +1485,7 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
                             {formatDualMoney(order.totalUsd, stats?.khrRate || 4100)}
                           </p>
                           <p className="text-[11px] font-medium text-[#6B6559]">
-                            Payment: {order.paymentStatus.toUpperCase()} ({order.paymentMethod})
+                            {order.paymentStatus.toUpperCase()} · {getPaymentMethodLabel(order.paymentMethod)}
                           </p>
                         </div>
                       </div>
@@ -1461,6 +1503,42 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
                             <p className="mt-1 font-mono-num text-emerald-800">
                               Promo: {order.couponCode} (-${(order.couponDiscountUsd || 0).toFixed(2)})
                             </p>
+                          )}
+                          {(order.paymentReference || order.paymentSlipUrl) && (
+                            <div className="mt-2 flex items-center gap-2 rounded-lg border border-[#E2DDD3] bg-white p-2">
+                              {order.paymentSlipUrl && (
+                                <button
+                                  type="button"
+                                  onClick={() => setViewingSlipOrder(order)}
+                                  className="h-11 w-11 shrink-0 overflow-hidden rounded-md border border-[#ECE8DF]"
+                                >
+                                  <SafeImage
+                                    src={order.paymentSlipUrl}
+                                    alt={`Slip ${order.orderNumber}`}
+                                    className="h-full w-full object-cover"
+                                  />
+                                </button>
+                              )}
+                              <div className="min-w-0 flex-1">
+                                <p className="font-semibold text-[#005B7F]">
+                                  ភស្តុតាងផ្ទេរប្រាក់ពីអតិថិជន
+                                </p>
+                                {order.paymentReference && (
+                                  <p className="font-mono-num text-[11px] text-[#4A463E] truncate">
+                                    Ref: {order.paymentReference}
+                                  </p>
+                                )}
+                                {order.paymentSlipUrl && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setViewingSlipOrder(order)}
+                                    className="text-[11px] font-semibold underline text-[#111111] mt-0.5"
+                                  >
+                                    មើលរូបភាពវិក្កយបត្រពេញ
+                                  </button>
+                                )}
+                              </div>
+                            </div>
                           )}
                         </div>
                         <div className="space-y-1">
@@ -1956,6 +2034,103 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
                           />
                         </div>
                       </div>
+
+                      {/* Real Store KHQR Images Upload (USD & KHR) */}
+                      <div className="mt-4 pt-4 border-t border-[#F2EFE9] grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="rounded-xl border border-[#E2DDD3] bg-[#FAF9F6] p-3.5 space-y-2.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-1.5 font-semibold text-[#111111]">
+                              <QrCode className="h-4 w-4 text-[#005B7F]" />
+                              <span>រូបភាព KHQR ហាង ($ USD)</span>
+                            </div>
+                            {settingsForm.abaQrUsdImage && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setSettingsForm({ ...settingsForm, abaQrUsdImage: '' })
+                                }
+                                className="text-[11px] font-medium text-red-700 hover:underline"
+                              >
+                                លុបចេញ
+                              </button>
+                            )}
+                          </div>
+                          {settingsForm.abaQrUsdImage && (
+                            <div className="w-36 overflow-hidden rounded-lg border border-[#E2DDD3] bg-white p-1.5">
+                              <SafeImage
+                                src={settingsForm.abaQrUsdImage}
+                                alt="KHQR USD Preview"
+                                className="h-auto w-full object-contain"
+                              />
+                            </div>
+                          )}
+                          <label className="inline-flex h-10 cursor-pointer items-center gap-1.5 rounded-xl border border-[#E2DDD3] bg-white px-3 text-xs font-medium text-[#111111] hover:border-[#111111]">
+                            <Upload className="h-3.5 w-3.5 text-[#005B7F]" />
+                            <span>
+                              {qrUploadingField === 'usd'
+                                ? 'កំពុង Upload...'
+                                : 'Upload រូប KHQR (USD)'}
+                            </span>
+                            <input
+                              type="file"
+                              accept="image/*"
+                              disabled={qrUploadingField === 'usd'}
+                              onChange={(e) => void handleUploadQrImage('usd', e)}
+                              className="hidden"
+                            />
+                          </label>
+                          <p className="text-[11px] text-[#6B6559]">
+                            Save រូប KHQR USD ពី ABA/Bakong App រួច Upload នៅទីនេះ ដើម្បីឱ្យភ្ញៀវស្កេនបង់លុយពិតផ្ទាល់។
+                          </p>
+                        </div>
+
+                        <div className="rounded-xl border border-[#E2DDD3] bg-[#FAF9F6] p-3.5 space-y-2.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-1.5 font-semibold text-[#111111]">
+                              <QrCode className="h-4 w-4 text-[#005B7F]" />
+                              <span>រូបភាព KHQR ហាង (៛ KHR)</span>
+                            </div>
+                            {settingsForm.abaQrKhrImage && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setSettingsForm({ ...settingsForm, abaQrKhrImage: '' })
+                                }
+                                className="text-[11px] font-medium text-red-700 hover:underline"
+                              >
+                                លុបចេញ
+                              </button>
+                            )}
+                          </div>
+                          {settingsForm.abaQrKhrImage && (
+                            <div className="w-36 overflow-hidden rounded-lg border border-[#E2DDD3] bg-white p-1.5">
+                              <SafeImage
+                                src={settingsForm.abaQrKhrImage}
+                                alt="KHQR KHR Preview"
+                                className="h-auto w-full object-contain"
+                              />
+                            </div>
+                          )}
+                          <label className="inline-flex h-10 cursor-pointer items-center gap-1.5 rounded-xl border border-[#E2DDD3] bg-white px-3 text-xs font-medium text-[#111111] hover:border-[#111111]">
+                            <Upload className="h-3.5 w-3.5 text-[#005B7F]" />
+                            <span>
+                              {qrUploadingField === 'khr'
+                                ? 'កំពុង Upload...'
+                                : 'Upload រូប KHQR (KHR)'}
+                            </span>
+                            <input
+                              type="file"
+                              accept="image/*"
+                              disabled={qrUploadingField === 'khr'}
+                              onChange={(e) => void handleUploadQrImage('khr', e)}
+                              className="hidden"
+                            />
+                          </label>
+                          <p className="text-[11px] text-[#6B6559]">
+                            បង្ហាញជូនភ្ញៀវដែលចង់ស្កេនទូទាត់ជាប្រាក់រៀល (KHR) តាម Bakong ឬគ្រប់ធនាគារ។
+                          </p>
+                        </div>
+                      </div>
                     </div>
                   </div>
 
@@ -2273,6 +2448,79 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
                 <Printer className="h-3.5 w-3.5" />
                 <span>បោះពុម្ព (Print)</span>
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Full-Size Customer Payment Slip Viewer Modal */}
+      {viewingSlipOrder && viewingSlipOrder.paymentSlipUrl && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 print:hidden"
+          onClick={() => setViewingSlipOrder(null)}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl space-y-3"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-[#ECE8DF] pb-2.5">
+              <div>
+                <h3 className="text-sm font-bold text-[#111111]">
+                  វិក្កយបត្រផ្ទេរប្រាក់ · {viewingSlipOrder.orderNumber}
+                </h3>
+                <p className="text-xs text-[#6B6559]">
+                  {viewingSlipOrder.customerName} ({viewingSlipOrder.customerPhone}) ·{' '}
+                  <span className="font-mono-num font-semibold text-[#111111]">
+                    ${viewingSlipOrder.totalUsd.toFixed(2)}
+                  </span>
+                </p>
+              </div>
+              <button
+                type="button"
+                aria-label="បិទ"
+                onClick={() => setViewingSlipOrder(null)}
+                className="flex h-9 w-9 items-center justify-center rounded-full hover:bg-[#FAF9F6]"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {viewingSlipOrder.paymentReference && (
+              <p className="rounded-lg bg-[#FAF9F6] border border-[#E2DDD3] px-3 py-2 text-xs font-mono-num">
+                លេខយោង៖ <b>{viewingSlipOrder.paymentReference}</b>
+              </p>
+            )}
+
+            <div className="max-h-[65vh] overflow-auto rounded-xl border border-[#E2DDD3] bg-[#FAF9F6] p-2">
+              <SafeImage
+                src={viewingSlipOrder.paymentSlipUrl}
+                alt={`Payment Slip ${viewingSlipOrder.orderNumber}`}
+                className="mx-auto h-auto max-w-full rounded-lg object-contain"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setViewingSlipOrder(null)}
+                className="h-10 rounded-xl border border-[#E2DDD3] px-4 text-xs font-medium"
+              >
+                បិទ
+              </button>
+              {canManageProducts && viewingSlipOrder.paymentStatus !== 'paid' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const id = viewingSlipOrder.id;
+                    setViewingSlipOrder(null);
+                    void handleUpdateOrderStatus(id, 'paid');
+                  }}
+                  className="flex h-10 items-center gap-1.5 rounded-xl bg-emerald-700 px-4 text-xs font-semibold text-white hover:bg-emerald-800"
+                >
+                  <Check className="h-3.5 w-3.5" />
+                  <span>បញ្ជាក់បានទទួលប្រាក់ (Paid)</span>
+                </button>
+              )}
             </div>
           </div>
         </div>

@@ -52,6 +52,8 @@ export const STATIC_FALLBACK_SETTINGS: StoreSettings = {
   abaAccountId: '3609517',
   abaAccountUsd: '009 338 762',
   abaAccountKhr: '009 338 764',
+  abaQrUsdImage: '',
+  abaQrKhrImage: '',
   updatedAt: STATIC_DATE,
 };
 

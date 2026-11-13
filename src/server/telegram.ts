@@ -86,7 +86,13 @@ export async function sendOrderTelegramNotification(
     })
     .join('\n');
 
-  const paymentLabel = order.paymentMethod === 'aba_khqr' ? 'ABA KHQR' : 'ABA PayWay';
+  const paymentLabelMap: Record<Order['paymentMethod'], string> = {
+    bank_qr: 'ស្កេន KHQR / ផ្ទេរ ABA ផ្ទាល់',
+    cod: 'បង់ពេលទទួលទំនិញ (COD)',
+    aba_khqr: 'ABA KHQR API',
+    aba_payway: 'ABA PayWay API',
+  };
+  const paymentLabel = paymentLabelMap[order.paymentMethod] || order.paymentMethod;
   const statusLabel = order.paymentStatus.toUpperCase();
   const zoneLabel = order.deliveryZone === 'province' ? 'តាមខេត្ត' : 'ភ្នំពេញ';
 
@@ -109,6 +115,9 @@ export async function sendOrderTelegramNotification(
     `• <b>តម្លៃសរុប:</b> <b>$${order.totalUsd.toFixed(2)}</b> (${order.totalKhr.toLocaleString('en-US')} ៛)`,
     `• <b>វិធីសាស្ត្រទូទាត់:</b> ${paymentLabel}`,
     `• <b>Payment Status:</b> ${statusLabel}`,
+    ...(order.paymentReference
+      ? [`• <b>លេខយោងផ្ទេរប្រាក់:</b> ${escapeHtml(order.paymentReference)}`]
+      : []),
     `• <b>កាលបរិច្ឆេទ និងម៉ោង:</b> ${formatKhmerDateTime(order.createdAt)}`,
   ].join('\n');
 

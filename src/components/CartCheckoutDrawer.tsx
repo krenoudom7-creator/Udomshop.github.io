@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react';
 import {
   AlertCircle,
   ArrowLeft,
@@ -11,6 +11,7 @@ import {
   Minus,
   Plus,
   Printer,
+  QrCode,
   RefreshCw,
   Send,
   ShieldCheck,
@@ -18,6 +19,8 @@ import {
   Smartphone,
   Tag,
   Trash2,
+  Truck,
+  Upload,
   X,
 } from 'lucide-react';
 import type {
@@ -28,7 +31,14 @@ import type {
   PaymentMethod,
 } from '../types/shop.ts';
 import { apiUrl, safeReadJson } from '../utils/api.ts';
-import { formatDateTimeKm, formatDualMoney, formatMoney } from '../utils/format.ts';
+import {
+  compressImageToWebP,
+  fileToDataUrl,
+  formatDateTimeKm,
+  formatDualMoney,
+  formatMoney,
+  getPaymentMethodLabel,
+} from '../utils/format.ts';
 import { SafeImage } from './SafeImage.tsx';
 
 export interface AbaBankInfo {
@@ -36,6 +46,8 @@ export interface AbaBankInfo {
   accountId: string;
   accountUsd: string;
   accountKhr: string;
+  qrUsdImage?: string;
+  qrKhrImage?: string;
 }
 
 interface CartCheckoutDrawerProps {
@@ -80,7 +92,8 @@ export function CartCheckoutDrawer({
   const [deliveryZone, setDeliveryZone] = useState<DeliveryZone>('phnom_penh');
   const [shippingAddress, setShippingAddress] = useState('');
   const [notes, setNotes] = useState('');
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('aba_payway');
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('bank_qr');
+  const [qrCurrency, setQrCurrency] = useState<CurrencyCode>(currency);
 
   // Promo coupon state
   const [couponInput, setCouponInput] = useState('');
@@ -100,8 +113,13 @@ export function CartCheckoutDrawer({
   const [verifyMessage, setVerifyMessage] = useState('');
   const [copiedField, setCopiedField] = useState('');
   const [transferRef, setTransferRef] = useState('');
+  const [slipDataUrl, setSlipDataUrl] = useState('');
   const [sendingTransferNote, setSendingTransferNote] = useState(false);
   const [transferNoteSent, setTransferNoteSent] = useState('');
+
+  useEffect(() => {
+    setQrCurrency(currency);
+  }, [currency]);
 
   useEffect(() => {
     if (!open) return;
@@ -111,6 +129,7 @@ export function CartCheckoutDrawer({
           setCreatedOrder(null);
           setStep('cart');
           setTransferRef('');
+          setSlipDataUrl('');
           setTransferNoteSent('');
         }
         onClose();
@@ -274,7 +293,12 @@ export function CartCheckoutDrawer({
           paymentStatus: 'pending',
           orderStatus: 'pending',
           abaTranId: staticOrderNumber,
-          abaMode: 'unconfigured',
+          abaMode:
+            paymentMethod === 'cod'
+              ? 'cod'
+              : paymentMethod === 'bank_qr'
+              ? 'direct_qr'
+              : 'unconfigured',
           telegramNotified: false,
           createdAt: now,
           updatedAt: now,
@@ -292,9 +316,11 @@ export function CartCheckoutDrawer({
         }
 
         setCreatedOrder(staticOrder);
-        setAbaNotice(
-          'កំពុងដំណើរការលើ GitHub Pages Static (គ្មាន Node.js Server)៖ មិនអាចបង្កើត ABA PayWay KHQR ស្វ័យប្រវត្តិបានទេ។ សូមផ្ទេរប្រាក់ផ្ទាល់តាមគណនី ABA ខាងក្រោម ឬបោះពុម្ពវិក្កយបត្រនេះ។'
-        );
+        if (paymentMethod === 'aba_payway' || paymentMethod === 'aba_khqr') {
+          setAbaNotice(
+            'កំពុងដំណើរការលើ GitHub Pages Static៖ មិនអាចបង្កើត ABA PayWay API បានទេ។ សូមផ្ទេរប្រាក់ផ្ទាល់តាមគណនី ABA ខាងក្រោម។'
+          );
+        }
         setStep('payment');
         setAppliedCoupon(null);
         setCouponInput('');
@@ -364,27 +390,52 @@ export function CartCheckoutDrawer({
     }
   };
 
+  const handleSlipFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setTransferNoteSent('');
+    try {
+      const optimized = await compressImageToWebP(file, 900);
+      const dataUrl = await fileToDataUrl(optimized);
+      setSlipDataUrl(dataUrl);
+    } catch {
+      setTransferNoteSent('មិនអាចអានរូបភាពវិក្កយបត្រនេះបានទេ សូមសាកល្បងរូបភាពផ្សេង។');
+    }
+  };
+
   const handleReportTransfer = async () => {
     if (!createdOrder) return;
+    if (!transferRef.trim() && !slipDataUrl) {
+      setTransferNoteSent('សូមជ្រើសរើសរូបភាពវិក្កយបត្រ ឬបញ្ចូលលេខយោងផ្ទេរប្រាក់ជាមុនសិន។');
+      return;
+    }
     setSendingTransferNote(true);
     setTransferNoteSent('');
     try {
-      const res = await fetch(apiUrl(`/api/orders/${createdOrder.id}/transfer-note`), {
+      const res = await fetch(apiUrl(`/api/orders/${createdOrder.id}/payment-proof`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reference: transferRef.trim() }),
+        body: JSON.stringify({
+          reference: transferRef.trim(),
+          ...(slipDataUrl ? { slipDataUrl } : {}),
+        }),
       });
       const data = await safeReadJson<{ order?: Order; message?: string; error?: string }>(res);
       if (!data) {
         setTransferNoteSent('មិនអាចភ្ជាប់ទៅ Server បានទេ។');
         return;
       }
+      if (!res.ok) {
+        setTransferNoteSent(data.error || 'មិនអាចផ្ញើភស្តុតាងបង់ប្រាក់បានទេ');
+        return;
+      }
       if (data.order) setCreatedOrder(data.order);
+      setSlipDataUrl('');
       setTransferNoteSent(
-        data.message || data.error || 'បានផ្ញើដំណឹងទៅហាងរួចរាល់'
+        data.message || 'បានផ្ញើភស្តុតាងបង់ប្រាក់ទៅហាងរួចរាល់!'
       );
     } catch {
-      setTransferNoteSent('មិនអាចផ្ញើដំណឹងបានទេ សូមព្យាយាមម្តងទៀត។');
+      setTransferNoteSent('មិនអាចផ្ញើភស្តុតាងបានទេ សូមព្យាយាមម្តងទៀត។');
     } finally {
       setSendingTransferNote(false);
     }
@@ -399,6 +450,7 @@ export function CartCheckoutDrawer({
       setCreatedOrder(null);
       setStep('cart');
       setTransferRef('');
+      setSlipDataUrl('');
       setTransferNoteSent('');
     }
     onClose();
@@ -432,7 +484,7 @@ export function CartCheckoutDrawer({
             <h2 className="text-base sm:text-lg font-semibold text-[#111111]">
               {effectiveStep === 'cart' && `កន្ត្រកទំនិញ (${items.reduce((a, b) => a + b.quantity, 0)})`}
               {effectiveStep === 'checkout' && 'ព័ត៌មានដឹកជញ្ជូន និងការទូទាត់'}
-              {effectiveStep === 'payment' && 'វិក្កយបត្រ & ABA PayWay'}
+              {effectiveStep === 'payment' && 'វិក្កយបត្រ & ការទូទាត់ប្រាក់'}
             </h2>
           </div>
 
@@ -720,40 +772,60 @@ export function CartCheckoutDrawer({
 
               <div>
                 <label className="block text-xs font-medium text-[#4A463E] mb-2">
-                  វិធីសាស្ត្រទូទាត់ (ABA Bank Official)
+                  ជ្រើសរើសវិធីសាស្ត្រទូទាត់ *
                 </label>
-                <div className="grid grid-cols-2 gap-2.5">
+                <div className="space-y-2.5">
                   <button
                     type="button"
-                    onClick={() => setPaymentMethod('aba_payway')}
-                    className={`flex min-h-[56px] items-center gap-2.5 rounded-xl border p-3 text-left transition ${
-                      paymentMethod === 'aba_payway'
+                    onClick={() => setPaymentMethod('bank_qr')}
+                    className={`flex w-full min-h-[58px] items-center gap-3 rounded-xl border p-3 text-left transition ${
+                      paymentMethod === 'bank_qr'
                         ? 'border-[#111111] bg-[#111111] text-white'
-                        : 'border-[#E2DDD3] bg-[#FAF9F6] text-[#111111]'
+                        : 'border-[#E2DDD3] bg-[#FAF9F6] text-[#111111] hover:border-[#111111]'
                     }`}
                   >
-                    <CreditCard className="h-5 w-5 shrink-0" />
-                    <div>
-                      <p className="text-xs font-semibold">ABA PayWay</p>
-                      <p className="text-[11px] opacity-75">ABA Mobile / Card</p>
+                    <QrCode className="h-5 w-5 shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-semibold">ស្កេន KHQR / ផ្ទេរ ABA ផ្ទាល់ (ពិតប្រាកដ ១០០%)</p>
+                      <p className="text-[11px] opacity-75">
+                        ផ្ទេរចូលគណនី {abaBankInfo.accountName} តាមគ្រប់ធនាគារ រួចផ្ញើវិក្កយបត្រ
+                      </p>
                     </div>
                   </button>
 
-                  <button
-                    type="button"
-                    onClick={() => setPaymentMethod('aba_khqr')}
-                    className={`flex min-h-[56px] items-center gap-2.5 rounded-xl border p-3 text-left transition ${
-                      paymentMethod === 'aba_khqr'
-                        ? 'border-[#111111] bg-[#111111] text-white'
-                        : 'border-[#E2DDD3] bg-[#FAF9F6] text-[#111111]'
-                    }`}
-                  >
-                    <Smartphone className="h-5 w-5 shrink-0" />
-                    <div>
-                      <p className="text-xs font-semibold">ABA KHQR</p>
-                      <p className="text-[11px] opacity-75">ស្កេន QR Code</p>
-                    </div>
-                  </button>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <button
+                      type="button"
+                      onClick={() => setPaymentMethod('cod')}
+                      className={`flex min-h-[56px] items-center gap-2.5 rounded-xl border p-3 text-left transition ${
+                        paymentMethod === 'cod'
+                          ? 'border-[#111111] bg-[#111111] text-white'
+                          : 'border-[#E2DDD3] bg-[#FAF9F6] text-[#111111] hover:border-[#111111]'
+                      }`}
+                    >
+                      <Truck className="h-5 w-5 shrink-0" />
+                      <div>
+                        <p className="text-xs font-semibold">បង់ពេលទទួលទំនិញ (COD)</p>
+                        <p className="text-[11px] opacity-75">សាច់ប្រាក់ ឬ QR ពេលដឹកដល់</p>
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setPaymentMethod('aba_payway')}
+                      className={`flex min-h-[56px] items-center gap-2.5 rounded-xl border p-3 text-left transition ${
+                        paymentMethod === 'aba_payway'
+                          ? 'border-[#111111] bg-[#111111] text-white'
+                          : 'border-[#E2DDD3] bg-[#FAF9F6] text-[#111111] hover:border-[#111111]'
+                      }`}
+                    >
+                      <CreditCard className="h-5 w-5 shrink-0" />
+                      <div>
+                        <p className="text-xs font-semibold">ABA PayWay API</p>
+                        <p className="text-[11px] opacity-75">តម្រូវមាន Merchant Production</p>
+                      </div>
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -824,6 +896,7 @@ export function CartCheckoutDrawer({
                 <div className="space-y-1 text-[#4A463E]">
                   <p>អតិថិជន៖ {createdOrder.customerName} ({createdOrder.customerPhone})</p>
                   <p>អាសយដ្ឋាន៖ {createdOrder.shippingAddress}</p>
+                  <p>វិធីទូទាត់៖ <b className="text-[#111111]">{getPaymentMethodLabel(createdOrder.paymentMethod)}</b></p>
                 </div>
                 <div className="border-t border-[#E2DDD3] pt-2 space-y-1.5">
                   {createdOrder.items.map((item, idx) => (
@@ -862,11 +935,24 @@ export function CartCheckoutDrawer({
                 </div>
               </div>
 
-              {/* ABA PayWay Official Checkout Actions */}
+              {/* Payment Instructions & Actions by Method */}
               {createdOrder.paymentStatus !== 'paid' && (
                 <div className="rounded-2xl border border-[#E2DDD3] bg-white p-4 space-y-3 print:hidden">
-                  {createdOrder.abaMode === 'live' &&
-                  (createdOrder.abaQrImage || createdOrder.abaQrString) ? (
+                  {createdOrder.paymentMethod === 'cod' || createdOrder.abaMode === 'cod' ? (
+                    <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 space-y-2 text-xs text-emerald-950">
+                      <div className="flex items-center gap-2 font-bold text-emerald-900">
+                        <Truck className="h-4 w-4 shrink-0" />
+                        <span>ការបញ្ជាទិញបង់ប្រាក់ពេលដឹកដល់ (COD) ត្រូវបានកត់ត្រារួចរាល់!</span>
+                      </div>
+                      <p className="leading-relaxed">
+                        អ្នកដឹកជញ្ជូននឹងទាក់ទងទៅលេខ{' '}
+                        <b className="font-mono-num">{createdOrder.customerPhone}</b> មុនពេលមកដល់។ សូមរៀបចំទឹកប្រាក់ចំនួន{' '}
+                        <b className="font-mono-num">${createdOrder.totalUsd.toFixed(2)}</b> (ឬ{' '}
+                        <b className="font-mono-num">{createdOrder.totalKhr.toLocaleString('en-US')} ៛</b>) សម្រាប់ទូទាត់ពេលទទួលទំនិញ។
+                      </p>
+                    </div>
+                  ) : createdOrder.abaMode === 'live' &&
+                    (createdOrder.abaQrImage || createdOrder.abaQrString) ? (
                     <div className="space-y-3">
                       <div className="rounded-xl border border-[#005B7F]/25 bg-[#005B7F]/5 p-4 text-center space-y-2.5">
                         <p className="text-xs font-bold text-[#005B7F]">
@@ -882,8 +968,7 @@ export function CartCheckoutDrawer({
                           </div>
                         )}
                         <p className="text-xs text-[#4A463E]">
-                          គណនីទទួល៖ <b className="text-[#111111]">{abaBankInfo.accountName}</b> ·
-                          ចំនួន{' '}
+                          គណនីទទួល៖ <b className="text-[#111111]">{abaBankInfo.accountName}</b> · ចំនួន{' '}
                           <b className="font-mono-num text-[#111111]">
                             ${createdOrder.totalUsd.toFixed(2)}
                           </b>
@@ -916,15 +1001,6 @@ export function CartCheckoutDrawer({
                           )}
                         </div>
                       </div>
-
-                      <div className="rounded-xl bg-[#FAF9F6] border border-[#ECE8DF] p-3 text-[11px] text-[#6B6559] flex flex-wrap items-center justify-between gap-2">
-                        <span>
-                          ឬផ្ទេរផ្ទាល់៖ <b className="text-[#111111]">{abaBankInfo.accountName}</b>{' '}
-                          ($ <span className="font-mono-num">{abaBankInfo.accountUsd}</span> / ៛{' '}
-                          <span className="font-mono-num">{abaBankInfo.accountKhr}</span>)
-                        </span>
-                        <span className="font-mono-num">ID: {abaBankInfo.accountId}</span>
-                      </div>
                     </div>
                   ) : createdOrder.abaMode === 'live' &&
                     createdOrder.abaCheckoutUrl &&
@@ -953,10 +1029,70 @@ export function CartCheckoutDrawer({
                     </>
                   ) : (
                     <div className="space-y-3">
+                      {/* Currency Selector for Real Store KHQR */}
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-bold text-[#005B7F]">
+                          ស្កេន KHQR ឬផ្ទេរប្រាក់ផ្ទាល់ (ពិតប្រាកដ)
+                        </span>
+                        <div className="flex items-center rounded-lg border border-[#E2DDD3] bg-[#FAF9F6] p-0.5 text-[11px] font-semibold">
+                          <button
+                            type="button"
+                            onClick={() => setQrCurrency('USD')}
+                            className={`rounded-md px-2.5 py-1 transition ${
+                              qrCurrency === 'USD'
+                                ? 'bg-[#111111] text-white'
+                                : 'text-[#6B6559] hover:text-[#111111]'
+                            }`}
+                          >
+                            USD ($)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setQrCurrency('KHR')}
+                            className={`rounded-md px-2.5 py-1 transition ${
+                              qrCurrency === 'KHR'
+                                ? 'bg-[#111111] text-white'
+                                : 'text-[#6B6559] hover:text-[#111111]'
+                            }`}
+                          >
+                            KHR (៛)
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Real Admin-Uploaded Shop KHQR Image (USD / KHR) */}
+                      {(qrCurrency === 'USD' ? abaBankInfo.qrUsdImage : abaBankInfo.qrKhrImage) ? (
+                        <div className="rounded-xl border border-[#005B7F]/25 bg-[#005B7F]/5 p-4 text-center space-y-2.5">
+                          <div className="mx-auto w-56 overflow-hidden rounded-xl border border-[#E5E0D5] bg-white p-2 shadow-sm">
+                            <SafeImage
+                              src={
+                                (qrCurrency === 'USD'
+                                  ? abaBankInfo.qrUsdImage
+                                  : abaBankInfo.qrKhrImage) || ''
+                              }
+                              alt={`Store KHQR ${qrCurrency}`}
+                              className="h-auto w-full object-contain"
+                            />
+                          </div>
+                          <p className="text-xs text-[#4A463E]">
+                            ស្កេនតាម ABA, ACLEDA, Wing ឬ Bakong · បញ្ចូលទឹកប្រាក់{' '}
+                            <b className="font-mono-num text-[#111111]">
+                              {qrCurrency === 'USD'
+                                ? `$${createdOrder.totalUsd.toFixed(2)}`
+                                : `${createdOrder.totalKhr.toLocaleString('en-US')} ៛`}
+                            </b>
+                          </p>
+                          <p className="text-[11px] text-[#6B6559]">
+                            សូមដាក់លេខ <b className="font-mono-num text-[#111111]">{createdOrder.orderNumber}</b> ក្នុង Remark ពេលផ្ទេរ
+                          </p>
+                        </div>
+                      ) : null}
+
+                      {/* Direct Copyable ABA Account Card */}
                       <div className="rounded-xl border border-[#005B7F]/25 bg-[#005B7F]/5 p-3.5 space-y-2.5 text-xs">
                         <div className="flex items-center justify-between">
                           <span className="font-bold text-[#005B7F]">
-                            ព័ត៌មានគណនី ABA Bank សម្រាប់ផ្ទេរប្រាក់
+                            គណនីទទួលប្រាក់ ABA Bank
                           </span>
                           <span className="font-mono-num text-[11px] font-semibold text-[#4A463E]">
                             ID: {abaBankInfo.accountId}
@@ -1023,22 +1159,61 @@ export function CartCheckoutDrawer({
                           <b className="font-mono-num text-[#111111]">
                             ${createdOrder.totalUsd.toFixed(2)}
                           </b>{' '}
-                          ({createdOrder.totalKhr.toLocaleString('en-US')} ៛) និងដាក់លេខ Order{' '}
+                          ({createdOrder.totalKhr.toLocaleString('en-US')} ៛) និងដាក់លេខ{' '}
                           <b className="font-mono-num text-[#111111]">{createdOrder.orderNumber}</b>{' '}
                           ក្នុងកំណត់សម្គាល់ Remark។
                         </p>
                       </div>
 
-                      {/* Optional Transfer Reference Notification (server-backed orders only) */}
+                      {/* Upload Payment Slip & Reference Proof (server-backed orders only) */}
                       {!createdOrder.id.startsWith('static_') && (
-                        <div className="space-y-2">
+                        <div className="rounded-xl border border-[#E2DDD3] bg-[#FAF9F6] p-3.5 space-y-2.5">
+                          <p className="text-xs font-semibold text-[#111111]">
+                            បង្ហោះរូបភាពវិក្កយបត្រផ្ទេរប្រាក់ (Payment Slip)
+                          </p>
+
+                          {(slipDataUrl || createdOrder.paymentSlipUrl) && (
+                            <div className="flex items-center gap-3 rounded-lg border border-[#E2DDD3] bg-white p-2">
+                              <img
+                                src={slipDataUrl || apiUrl(createdOrder.paymentSlipUrl || '')}
+                                alt="Payment Slip Preview"
+                                className="h-16 w-16 rounded-lg object-cover border border-[#ECE8DF]"
+                              />
+                              <div className="min-w-0 flex-1 text-[11px] text-[#4A463E]">
+                                <p className="font-semibold text-[#111111]">
+                                  {slipDataUrl
+                                    ? 'រូបភាពវិក្កយបត្រត្រៀមរួចរាល់ — សូមចុចប៊ូតុងផ្ញើខាងក្រោម'
+                                    : 'បានផ្ញើរូបភាពវិក្កយបត្រទៅហាងរួចរាល់'}
+                                </p>
+                                {createdOrder.paymentReference && (
+                                  <p className="font-mono-num mt-0.5">
+                                    Ref: {createdOrder.paymentReference}
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                          )}
+
+                          <div className="flex flex-wrap gap-2">
+                            <label className="flex h-10 cursor-pointer items-center gap-1.5 rounded-xl border border-[#E2DDD3] bg-white px-3 text-xs font-medium text-[#111111] hover:border-[#111111]">
+                              <Upload className="h-3.5 w-3.5 text-[#005B7F]" />
+                              <span>ជ្រើសរើសរូបភាពវិក្កយបត្រ</span>
+                              <input
+                                type="file"
+                                accept="image/*"
+                                onChange={handleSlipFileChange}
+                                className="hidden"
+                              />
+                            </label>
+                          </div>
+
                           <div className="flex gap-2">
                             <input
                               type="text"
                               value={transferRef}
                               onChange={(e) => setTransferRef(e.target.value)}
-                              placeholder="លេខយោងផ្ទេរប្រាក់ ABA (បើមាន)..."
-                              className="h-10 flex-1 rounded-xl border border-[#E2DDD3] bg-[#FAF9F6] px-3 text-xs focus:border-[#111111] focus:bg-white focus:outline-none"
+                              placeholder="លេខយោងផ្ទេរប្រាក់ (បើមាន)..."
+                              className="h-10 flex-1 rounded-xl border border-[#E2DDD3] bg-white px-3 text-xs focus:border-[#111111] focus:outline-none"
                             />
                             <button
                               type="button"
@@ -1047,7 +1222,7 @@ export function CartCheckoutDrawer({
                               className="flex h-10 items-center gap-1.5 rounded-xl bg-[#005B7F] px-3.5 text-xs font-semibold text-white hover:bg-[#004866] disabled:opacity-50 shrink-0"
                             >
                               <Send className="h-3.5 w-3.5" />
-                              <span>{sendingTransferNote ? '...' : 'បានផ្ទេរប្រាក់រួច'}</span>
+                              <span>{sendingTransferNote ? '...' : 'ផ្ញើភស្តុតាង'}</span>
                             </button>
                           </div>
                           {transferNoteSent && (
@@ -1066,21 +1241,23 @@ export function CartCheckoutDrawer({
                     </p>
                   )}
 
-                  {!createdOrder.id.startsWith('static_') && (
-                    <button
-                      type="button"
-                      onClick={handleVerifyPayment}
-                      disabled={verifying}
-                      className="flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-[#111111] bg-white text-xs font-semibold text-[#111111] hover:bg-[#FAF9F6] disabled:opacity-50"
-                    >
-                      {verifying ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <RefreshCw className="h-4 w-4" />
-                      )}
-                      <span>ផ្ទៀងផ្ទាត់ស្ថានភាពទូទាត់ពី Server</span>
-                    </button>
-                  )}
+                  {!createdOrder.id.startsWith('static_') &&
+                    (createdOrder.paymentMethod === 'aba_payway' ||
+                      createdOrder.paymentMethod === 'aba_khqr') && (
+                      <button
+                        type="button"
+                        onClick={handleVerifyPayment}
+                        disabled={verifying}
+                        className="flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-[#111111] bg-white text-xs font-semibold text-[#111111] hover:bg-[#FAF9F6] disabled:opacity-50"
+                      >
+                        {verifying ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <RefreshCw className="h-4 w-4" />
+                        )}
+                        <span>ផ្ទៀងផ្ទាត់ស្ថានភាពទូទាត់ពី Server</span>
+                      </button>
+                    )}
 
                   {verifyMessage && (
                     <p className="text-xs text-[#4A463E] bg-[#FAF9F6] p-2.5 rounded-lg border border-[#E2DDD3]">

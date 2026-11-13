@@ -453,8 +453,10 @@ async function startServer() {
         body.deliveryZone === 'province' ? 'province' : 'phnom_penh';
       const notes = String(body.notes || '').trim().slice(0, 300);
       const currency: CurrencyCode = body.currency === 'KHR' ? 'KHR' : 'USD';
-      const paymentMethod: PaymentMethod =
-        body.paymentMethod === 'aba_khqr' ? 'aba_khqr' : 'aba_payway';
+      const allowedMethods: PaymentMethod[] = ['bank_qr', 'cod', 'aba_payway', 'aba_khqr'];
+      const paymentMethod: PaymentMethod = allowedMethods.includes(body.paymentMethod as PaymentMethod)
+        ? (body.paymentMethod as PaymentMethod)
+        : 'bank_qr';
       const reqItems = Array.isArray(body.items) ? body.items : [];
 
       if (customerName.length < 2 || customerName.length > 120) {
@@ -550,20 +552,40 @@ async function startServer() {
       const abaTranId = `OD${Date.now()}${Math.floor(Math.random() * 90 + 10)}`;
       const normalizedPhone = customerPhone.replace(/\s+/g, '');
 
+      const isPayWayApi = paymentMethod === 'aba_payway' || paymentMethod === 'aba_khqr';
       const baseUrl = getAppBaseUrl(req);
-      const abaResult = await createAbaPayWayPurchase({
-        tranId: abaTranId,
-        amount: totalUsd.toFixed(2),
-        currency: 'USD',
-        items: orderItems,
-        shipping: shippingFeeUsd.toFixed(2),
-        customerName,
-        customerPhone: normalizedPhone,
-        paymentMethod,
-        returnUrl: `${baseUrl}/?order=${encodeURIComponent(orderNumber)}`,
-        continueSuccessUrl: `${baseUrl}/?order=${encodeURIComponent(orderNumber)}&aba_return=1`,
-        callbackUrl: `${baseUrl}/api/payments/aba-callback`,
-      });
+      const abaResult = isPayWayApi
+        ? await createAbaPayWayPurchase({
+            tranId: abaTranId,
+            amount: totalUsd.toFixed(2),
+            currency: 'USD',
+            items: orderItems,
+            shipping: shippingFeeUsd.toFixed(2),
+            customerName,
+            customerPhone: normalizedPhone,
+            paymentMethod,
+            returnUrl: `${baseUrl}/?order=${encodeURIComponent(orderNumber)}`,
+            continueSuccessUrl: `${baseUrl}/?order=${encodeURIComponent(orderNumber)}&aba_return=1`,
+            callbackUrl: `${baseUrl}/api/payments/aba-callback`,
+          })
+        : {
+            configured: false,
+            qrString: undefined,
+            qrImage: undefined,
+            abapayDeeplink: undefined,
+            checkoutUrl: undefined,
+            payload: undefined,
+            rawError: undefined,
+          };
+
+      const resolvedMode: Order['abaMode'] =
+        paymentMethod === 'cod'
+          ? 'cod'
+          : paymentMethod === 'bank_qr'
+          ? 'direct_qr'
+          : abaResult.configured
+          ? 'live'
+          : 'unconfigured';
 
       const createdOrder = await mutateDb((state) => {
         if (appliedCouponCode) {
@@ -617,7 +639,7 @@ async function startServer() {
           ...(abaResult.abapayDeeplink ? { abaDeeplink: abaResult.abapayDeeplink } : {}),
           ...(abaResult.checkoutUrl ? { abaCheckoutUrl: abaResult.checkoutUrl } : {}),
           ...(abaResult.payload ? { abaPayload: abaResult.payload } : {}),
-          abaMode: abaResult.configured ? 'live' : 'unconfigured',
+          abaMode: resolvedMode,
           telegramNotified: false,
           createdAt: now,
           updatedAt: now,
@@ -635,13 +657,23 @@ async function startServer() {
           currency,
           method: paymentMethod,
           status: 'pending',
-          provider: 'ABA PayWay',
+          provider:
+            paymentMethod === 'cod'
+              ? 'Cash on Delivery (COD)'
+              : paymentMethod === 'bank_qr'
+              ? 'Direct KHQR / ABA Transfer'
+              : 'ABA PayWay',
           verifiedByServer: false,
-          statusDetail: abaResult.rawError
-            ? `ABA PayWay notice: ${abaResult.rawError}`
-            : abaResult.configured
-            ? 'Awaiting ABA PayWay completion'
-            : 'Awaiting Merchant ABA PayWay credentials configuration',
+          statusDetail:
+            paymentMethod === 'cod'
+              ? 'Cash on Delivery — collect payment upon delivery'
+              : paymentMethod === 'bank_qr'
+              ? 'Awaiting direct KHQR/ABA transfer & proof verification'
+              : abaResult.rawError
+              ? `ABA PayWay notice: ${abaResult.rawError}`
+              : abaResult.configured
+              ? 'Awaiting ABA PayWay completion'
+              : 'Awaiting Merchant ABA PayWay credentials configuration',
           createdAt: now,
         });
 
@@ -692,20 +724,63 @@ async function startServer() {
     }
   });
 
-  // Public: Customer reports ABA Bank Transfer reference for Admin verification (does NOT mark Paid)
-  app.post('/api/orders/:id/transfer-note', async (req, res) => {
+  // Public: Customer submits Payment Slip Image &/or Transfer Reference (for Admin verification)
+  app.post('/api/orders/:id/payment-proof', async (req, res) => {
     try {
       const reference = String(req.body?.reference || '').trim().slice(0, 120);
+      const rawSlipDataUrl = typeof req.body?.slipDataUrl === 'string' ? req.body.slipDataUrl.trim() : '';
+
+      if (!reference && !rawSlipDataUrl) {
+        return res.status(400).json({ error: 'សូមភ្ជាប់រូបភាពវិក្កយបត្រ ឬបញ្ចូលលេខយោងផ្ទេរប្រាក់' });
+      }
+
+      let storedSlipUrl = '';
+      if (rawSlipDataUrl) {
+        const dataMatch = /^data:(image\/(?:jpeg|jpg|png|webp|avif));base64,([A-Za-z0-9+/=]+)$/.exec(
+          rawSlipDataUrl
+        );
+        if (!dataMatch) {
+          return res.status(400).json({ error: 'ទម្រង់រូបភាពវិក្កយបត្រមិនត្រឹមត្រូវទេ (JPG, PNG, WebP)' });
+        }
+        const mimeType = dataMatch[1] === 'image/jpg' ? 'image/jpeg' : dataMatch[1];
+        const base64Body = dataMatch[2];
+        const buffer = Buffer.from(base64Body, 'base64');
+        if (buffer.byteLength > 2.5 * 1024 * 1024) {
+          return res.status(400).json({ error: 'ទំហំរូបភាពវិក្កយបត្រធំពេក (អតិបរមា 2.5MB)' });
+        }
+
+        const mediaId = await mutateDb((state) => {
+          const id = newId('slip');
+          state.media.push({
+            id,
+            mimeType,
+            sizeBytes: buffer.byteLength,
+            base64Data: buffer.toString('base64'),
+            uploadedBy: `customer_order_${req.params.id}`,
+            createdAt: new Date().toISOString(),
+          });
+          return id;
+        });
+        storedSlipUrl = `/api/media/${mediaId}`;
+      }
+
+      const now = new Date().toISOString();
       const updated = await mutateDb((state) => {
         const order = state.orders.find((o) => o.id === req.params.id);
         if (!order) return null;
-        const noteTag = reference ? `[ABA Ref: ${reference}]` : '[អតិថិជនជូនដំណឹងថាបានផ្ទេរប្រាក់ ABA]';
-        order.notes = order.notes ? `${order.notes} · ${noteTag}` : noteTag;
-        order.updatedAt = new Date().toISOString();
+
+        if (reference) {
+          order.paymentReference = reference;
+        }
+        if (storedSlipUrl) {
+          order.paymentSlipUrl = storedSlipUrl;
+        }
+        order.paymentSubmittedAt = now;
+        order.updatedAt = now;
 
         const payment = state.payments.find((p) => p.orderId === order.id);
         if (payment && payment.status === 'pending') {
-          payment.statusDetail = `Customer reported ABA transfer (${reference || 'no ref'}) — awaiting admin verification`;
+          payment.statusDetail = `អតិថិជនបានផ្ញើភស្តុតាងទូទាត់${reference ? ` (Ref: ${reference})` : ''}${storedSlipUrl ? ' + រូបភាពវិក្កយបត្រ' : ''} — រង់ចាំ Admin ពិនិត្យ`;
         }
         return { ...order };
       });
@@ -715,12 +790,53 @@ async function startServer() {
       }
 
       await sendRawTelegramMessage(
-        `💳 អតិថិជនជូនដំណឹងថាបានផ្ទេរប្រាក់ ABA!\nOrder: <code>${updated.orderNumber}</code>\nឈ្មោះ: ${updated.customerName} (${updated.customerPhone})\nចំនួន: $${updated.totalUsd.toFixed(2)} (${updated.totalKhr.toLocaleString('en-US')} ៛)\nកំណត់សម្គាល់: ${reference || 'មិនបានបញ្ចូលលេខយោង'}\nសូមពិនិត្យ ABA App រួចចុច Confirm Paid ក្នុង Admin Dashboard។`
+        `🧾 <b>អតិថិជនបានផ្ញើភស្តុតាងបង់ប្រាក់!</b>\n• Order: <code>${updated.orderNumber}</code>\n• អតិថិជន: ${updated.customerName} (${updated.customerPhone})\n• ចំនួន: $${updated.totalUsd.toFixed(2)} (${updated.totalKhr.toLocaleString('en-US')} ៛)\n• លេខយោង: ${reference || 'មិនបានបញ្ចូល'}\n• រូបភាពវិក្កយបត្រ: ${storedSlipUrl ? 'បានភ្ជាប់រួចរាល់ (មើលក្នុង Admin Dashboard)' : 'គ្មាន'}\nសូមពិនិត្យ រួចចុច Confirm Paid ក្នុង Admin Dashboard។`
       );
 
       res.json({
         order: updated,
-        message: 'បានផ្ញើដំណឹងទៅហាងរួចរាល់! ក្រុមការងារនឹងផ្ទៀងផ្ទាត់ ABA App របស់លោកអ្នកក្នុងពេលឆាប់ៗ។',
+        message: 'បានផ្ញើភស្តុតាងបង់ប្រាក់ទៅហាងរួចរាល់! ក្រុមការងារនឹងពិនិត្យ និងបញ្ជាក់ជូនលោកអ្នកឆាប់ៗ។',
+      });
+    } catch (error) {
+      console.error('Payment proof upload failed:', error);
+      res.status(500).json({ error: 'មិនអាចផ្ញើភស្តុតាងបង់ប្រាក់បានទេ' });
+    }
+  });
+
+  // Public: Customer reports ABA Bank Transfer reference for Admin verification (does NOT mark Paid)
+  app.post('/api/orders/:id/transfer-note', async (req, res) => {
+    try {
+      const reference = String(req.body?.reference || '').trim().slice(0, 120);
+      const now = new Date().toISOString();
+      const updated = await mutateDb((state) => {
+        const order = state.orders.find((o) => o.id === req.params.id);
+        if (!order) return null;
+        if (reference) {
+          order.paymentReference = reference;
+        }
+        order.paymentSubmittedAt = now;
+        const noteTag = reference ? `[ABA Ref: ${reference}]` : '[អតិថិជនជូនដំណឹងថាបានផ្ទេរប្រាក់ ABA]';
+        order.notes = order.notes ? `${order.notes} · ${noteTag}` : noteTag;
+        order.updatedAt = now;
+
+        const payment = state.payments.find((p) => p.orderId === order.id);
+        if (payment && payment.status === 'pending') {
+          payment.statusDetail = `Customer reported transfer (${reference || 'no ref'}) — awaiting admin verification`;
+        }
+        return { ...order };
+      });
+
+      if (!updated) {
+        return res.status(404).json({ error: 'រកមិនឃើញការបញ្ជាទិញទេ' });
+      }
+
+      await sendRawTelegramMessage(
+        `💳 អតិថិជនជូនដំណឹងថាបានផ្ទេរប្រាក់!\nOrder: <code>${updated.orderNumber}</code>\nឈ្មោះ: ${updated.customerName} (${updated.customerPhone})\nចំនួន: $${updated.totalUsd.toFixed(2)} (${updated.totalKhr.toLocaleString('en-US')} ៛)\nកំណត់សម្គាល់: ${reference || 'មិនបានបញ្ចូលលេខយោង'}\nសូមពិនិត្យគណនី រួចចុច Confirm Paid ក្នុង Admin Dashboard។`
+      );
+
+      res.json({
+        order: updated,
+        message: 'បានផ្ញើដំណឹងទៅហាងរួចរាល់! ក្រុមការងារនឹងផ្ទៀងផ្ទាត់ការបង់ប្រាក់របស់លោកអ្នកក្នុងពេលឆាប់ៗ។',
       });
     } catch (error) {
       console.error('Transfer note failed:', error);
@@ -1281,6 +1397,8 @@ async function startServer() {
             abaAccountId: b.abaAccountId !== undefined ? String(b.abaAccountId).trim() : state.settings.abaAccountId,
             abaAccountUsd: b.abaAccountUsd !== undefined ? String(b.abaAccountUsd).trim() : state.settings.abaAccountUsd,
             abaAccountKhr: b.abaAccountKhr !== undefined ? String(b.abaAccountKhr).trim() : state.settings.abaAccountKhr,
+            abaQrUsdImage: b.abaQrUsdImage !== undefined ? String(b.abaQrUsdImage).trim().slice(0, 2000) : state.settings.abaQrUsdImage || '',
+            abaQrKhrImage: b.abaQrKhrImage !== undefined ? String(b.abaQrKhrImage).trim().slice(0, 2000) : state.settings.abaQrKhrImage || '',
             khrRate: Number.isFinite(Number(b.khrRate)) && Number(b.khrRate) >= 1000 ? Math.round(Number(b.khrRate)) : state.settings.khrRate,
             freeShippingThresholdUsd:
               Number.isFinite(Number(b.freeShippingThresholdUsd)) && Number(b.freeShippingThresholdUsd) >= 0

@@ -1,4 +1,10 @@
-import type { Category, CurrencyCode, OrderStatus, ProductCategory } from '../types/shop.ts';
+import type {
+  Category,
+  CurrencyCode,
+  OrderStatus,
+  PaymentMethod,
+  ProductCategory,
+} from '../types/shop.ts';
 
 export const DEFAULT_CATEGORY_LABELS: Record<string, string> = {
   all: 'ទាំងអស់',
@@ -56,6 +62,17 @@ export const ORDER_STATUS_LABELS: Record<OrderStatus, { km: string; en: string; 
     tone: 'bg-red-50 text-red-800 border-red-200',
   },
 };
+
+export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
+  bank_qr: 'ស្កេន KHQR / ផ្ទេរ ABA ផ្ទាល់',
+  cod: 'បង់ពេលទទួលទំនិញ (COD)',
+  aba_payway: 'ABA PayWay API',
+  aba_khqr: 'ABA KHQR',
+};
+
+export function getPaymentMethodLabel(method: PaymentMethod): string {
+  return PAYMENT_METHOD_LABELS[method] || method;
+}
 
 export function formatMoney(amountUsd: number, currency: CurrencyCode, khrRate = 4100): string {
   if (currency === 'KHR') {
@@ -131,5 +148,20 @@ export async function compressImageToWebP(file: File, maxWidth = 1100): Promise<
     };
 
     img.src = objectUrl;
+  });
+}
+
+export function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        resolve(reader.result);
+      } else {
+        reject(new Error('Failed to read file'));
+      }
+    };
+    reader.onerror = () => reject(reader.error || new Error('Failed to read file'));
+    reader.readAsDataURL(file);
   });
 }

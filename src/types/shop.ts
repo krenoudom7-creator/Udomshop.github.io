@@ -6,7 +6,7 @@ export type CurrencyCode = 'USD' | 'KHR';
 
 export type DeliveryZone = 'phnom_penh' | 'province';
 
-export type PaymentMethod = 'aba_payway' | 'aba_khqr';
+export type PaymentMethod = 'bank_qr' | 'cod' | 'aba_payway' | 'aba_khqr';
 
 export type PaymentStatus = 'pending' | 'paid' | 'failed';
 
@@ -57,6 +57,8 @@ export interface StoreSettings {
   abaAccountId: string;
   abaAccountUsd: string;
   abaAccountKhr: string;
+  abaQrUsdImage?: string;
+  abaQrKhrImage?: string;
   khrRate: number;
   freeShippingThresholdUsd: number;
   phnomPenhShippingUsd: number;
@@ -131,7 +133,10 @@ export interface Order {
   abaDeeplink?: string;
   abaCheckoutUrl?: string;
   abaPayload?: Record<string, string>;
-  abaMode: 'live' | 'unconfigured';
+  abaMode: 'live' | 'direct_qr' | 'cod' | 'unconfigured';
+  paymentSlipUrl?: string;
+  paymentReference?: string;
+  paymentSubmittedAt?: string;
   telegramNotified: boolean;
   createdAt: string;
   updatedAt: string;

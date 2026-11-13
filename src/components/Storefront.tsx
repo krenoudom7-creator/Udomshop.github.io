@@ -827,9 +827,9 @@ export function Storefront({ onNavigateAdmin }: StorefrontProps) {
               </p>
             </div>
             <div>
-              <p className="text-sm font-semibold text-[#111111]">០២. ទូទាត់តាម ABA PayWay</p>
+              <p className="text-sm font-semibold text-[#111111]">០២. ទូទាត់ងាយស្រួល និងពិតប្រាកដ</p>
               <p className="mt-1 text-xs leading-relaxed text-[#6B6559]">
-                គាំទ្រការទូទាត់សុវត្ថិភាពតាម ABA Mobile និង KHQR ផ្ទៀងផ្ទាត់ស្វ័យប្រវត្តិ។
+                គាំទ្រការស្កេន KHQR ផ្ទេរប្រាក់ ABA ផ្ទាល់ និងការបង់ប្រាក់ពេលទទួលទំនិញ (COD)។
               </p>
             </div>
             <div>
@@ -924,6 +924,8 @@ export function Storefront({ onNavigateAdmin }: StorefrontProps) {
           accountId: settings?.abaAccountId || '3609517',
           accountUsd: settings?.abaAccountUsd || '009 338 762',
           accountKhr: settings?.abaAccountKhr || '009 338 764',
+          qrUsdImage: settings?.abaQrUsdImage || '',
+          qrKhrImage: settings?.abaQrKhrImage || '',
         }}
         initialStep={checkoutInitialStep}
         onClose={() => setCartOpen(false)}
