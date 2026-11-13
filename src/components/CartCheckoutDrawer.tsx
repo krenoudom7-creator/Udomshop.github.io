@@ -234,9 +234,71 @@ export function CartCheckoutDrawer({
       }>(response);
 
       if (!data) {
-        setError(
-          'ការបញ្ជាទិញ និង ABA PayWay ត្រូវការ Node.js Server (មិនដំណើរការលើ GitHub Pages Static ទេ)។'
+        const now = new Date().toISOString();
+        const staticOrderNumber = `ODS-${Date.now().toString().slice(-6)}`;
+        const staticOrder: Order = {
+          id: `static_${Date.now()}`,
+          orderNumber: staticOrderNumber,
+          customerId: 'static_customer',
+          customerName: customerName.trim(),
+          customerPhone: customerPhone.trim(),
+          shippingAddress: shippingAddress.trim(),
+          deliveryZone,
+          notes: notes.trim() || undefined,
+          items: items.map((item) => {
+            const unitPrice =
+              item.product.discountPriceUsd !== null &&
+              item.product.discountPriceUsd < item.product.priceUsd
+                ? item.product.discountPriceUsd
+                : item.product.priceUsd;
+            return {
+              productId: item.product.id,
+              sku: item.product.sku,
+              name: item.product.name,
+              imageUrl: item.product.imageUrl,
+              quantity: item.quantity,
+              unitPriceUsd: unitPrice,
+              originalPriceUsd: item.product.priceUsd,
+              lineTotalUsd: Number((unitPrice * item.quantity).toFixed(2)),
+              selectedSize: item.selectedSize,
+              selectedColor: item.selectedColor,
+            };
+          }),
+          subtotalUsd: Number(subtotalUsd.toFixed(2)),
+          shippingFeeUsd: Number(shippingFeeUsd.toFixed(2)),
+          discountUsd: Number((discountSavingsUsd + couponDiscountUsd).toFixed(2)),
+          totalUsd: Number(totalUsd.toFixed(2)),
+          totalKhr: Math.round(totalUsd * khrRate),
+          currency,
+          paymentMethod,
+          paymentStatus: 'pending',
+          orderStatus: 'pending',
+          abaTranId: staticOrderNumber,
+          abaMode: 'unconfigured',
+          telegramNotified: false,
+          createdAt: now,
+          updatedAt: now,
+        };
+
+        try {
+          const prevRaw = localStorage.getItem('oudom_static_orders');
+          const prevList = prevRaw ? (JSON.parse(prevRaw) as Order[]) : [];
+          localStorage.setItem(
+            'oudom_static_orders',
+            JSON.stringify([staticOrder, ...prevList].slice(0, 20))
+          );
+        } catch {
+          // Ignore storage quota errors
+        }
+
+        setCreatedOrder(staticOrder);
+        setAbaNotice(
+          'កំពុងដំណើរការលើ GitHub Pages Static (គ្មាន Node.js Server)៖ មិនអាចបង្កើត ABA PayWay KHQR ស្វ័យប្រវត្តិបានទេ។ សូមផ្ទេរប្រាក់ផ្ទាល់តាមគណនី ABA ខាងក្រោម ឬបោះពុម្ពវិក្កយបត្រនេះ។'
         );
+        setStep('payment');
+        setAppliedCoupon(null);
+        setCouponInput('');
+        onClearCart();
         return;
       }
 
@@ -967,32 +1029,34 @@ export function CartCheckoutDrawer({
                         </p>
                       </div>
 
-                      {/* Optional Transfer Reference Notification */}
-                      <div className="space-y-2">
-                        <div className="flex gap-2">
-                          <input
-                            type="text"
-                            value={transferRef}
-                            onChange={(e) => setTransferRef(e.target.value)}
-                            placeholder="លេខយោងផ្ទេរប្រាក់ ABA (បើមាន)..."
-                            className="h-10 flex-1 rounded-xl border border-[#E2DDD3] bg-[#FAF9F6] px-3 text-xs focus:border-[#111111] focus:bg-white focus:outline-none"
-                          />
-                          <button
-                            type="button"
-                            onClick={handleReportTransfer}
-                            disabled={sendingTransferNote}
-                            className="flex h-10 items-center gap-1.5 rounded-xl bg-[#005B7F] px-3.5 text-xs font-semibold text-white hover:bg-[#004866] disabled:opacity-50 shrink-0"
-                          >
-                            <Send className="h-3.5 w-3.5" />
-                            <span>{sendingTransferNote ? '...' : 'បានផ្ទេរប្រាក់រួច'}</span>
-                          </button>
+                      {/* Optional Transfer Reference Notification (server-backed orders only) */}
+                      {!createdOrder.id.startsWith('static_') && (
+                        <div className="space-y-2">
+                          <div className="flex gap-2">
+                            <input
+                              type="text"
+                              value={transferRef}
+                              onChange={(e) => setTransferRef(e.target.value)}
+                              placeholder="លេខយោងផ្ទេរប្រាក់ ABA (បើមាន)..."
+                              className="h-10 flex-1 rounded-xl border border-[#E2DDD3] bg-[#FAF9F6] px-3 text-xs focus:border-[#111111] focus:bg-white focus:outline-none"
+                            />
+                            <button
+                              type="button"
+                              onClick={handleReportTransfer}
+                              disabled={sendingTransferNote}
+                              className="flex h-10 items-center gap-1.5 rounded-xl bg-[#005B7F] px-3.5 text-xs font-semibold text-white hover:bg-[#004866] disabled:opacity-50 shrink-0"
+                            >
+                              <Send className="h-3.5 w-3.5" />
+                              <span>{sendingTransferNote ? '...' : 'បានផ្ទេរប្រាក់រួច'}</span>
+                            </button>
+                          </div>
+                          {transferNoteSent && (
+                            <p className="text-[11px] text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg p-2.5">
+                              {transferNoteSent}
+                            </p>
+                          )}
                         </div>
-                        {transferNoteSent && (
-                          <p className="text-[11px] text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg p-2.5">
-                            {transferNoteSent}
-                          </p>
-                        )}
-                      </div>
+                      )}
                     </div>
                   )}
 
@@ -1002,19 +1066,21 @@ export function CartCheckoutDrawer({
                     </p>
                   )}
 
-                  <button
-                    type="button"
-                    onClick={handleVerifyPayment}
-                    disabled={verifying}
-                    className="flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-[#111111] bg-white text-xs font-semibold text-[#111111] hover:bg-[#FAF9F6] disabled:opacity-50"
-                  >
-                    {verifying ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <RefreshCw className="h-4 w-4" />
-                    )}
-                    <span>ផ្ទៀងផ្ទាត់ស្ថានភាពទូទាត់ពី Server</span>
-                  </button>
+                  {!createdOrder.id.startsWith('static_') && (
+                    <button
+                      type="button"
+                      onClick={handleVerifyPayment}
+                      disabled={verifying}
+                      className="flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-[#111111] bg-white text-xs font-semibold text-[#111111] hover:bg-[#FAF9F6] disabled:opacity-50"
+                    >
+                      {verifying ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <RefreshCw className="h-4 w-4" />
+                      )}
+                      <span>ផ្ទៀងផ្ទាត់ស្ថានភាពទូទាត់ពី Server</span>
+                    </button>
+                  )}
 
                   {verifyMessage && (
                     <p className="text-xs text-[#4A463E] bg-[#FAF9F6] p-2.5 rounded-lg border border-[#E2DDD3]">

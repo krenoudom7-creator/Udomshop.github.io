@@ -41,7 +41,24 @@ export function OrderTrackerModal({ open, khrRate, onClose }: OrderTrackerModalP
       const res = await fetch(apiUrl(`/api/orders/lookup?${params.toString()}`));
       const data = await safeReadJson<{ order?: Order; error?: string }>(res);
       if (!data) {
-        setError('មុខងារតាមដាន Order ត្រូវការការតភ្ជាប់ Node.js Server។');
+        try {
+          const raw = localStorage.getItem('oudom_static_orders');
+          const list = raw ? (JSON.parse(raw) as Order[]) : [];
+          const targetId = orderNumber.trim().toUpperCase();
+          const targetDigits = phone.replace(/\D/g, '');
+          const match = list.find(
+            (o) =>
+              o.orderNumber.toUpperCase() === targetId &&
+              o.customerPhone.replace(/\D/g, '') === targetDigits
+          );
+          if (match) {
+            setOrder(match);
+            return;
+          }
+        } catch {
+          // Ignore storage error
+        }
+        setError('មុខងារតាមដាន Order លើ Server ត្រូវការការតភ្ជាប់ Node.js Server។');
       } else if (!res.ok || !data.order) {
         setError(data.error || 'រកមិនឃើញការបញ្ជាទិញទេ');
       } else {
