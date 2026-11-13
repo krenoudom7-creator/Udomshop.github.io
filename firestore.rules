@@ -1,0 +1,122 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global safety net: deny all by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isBootstrappedSuperAdmin() {
+      return isVerifiedUser() && request.auth.token.email == 'krenoudom7@gmail.com';
+    }
+
+    function isAdmin() {
+      return isBootstrappedSuperAdmin() || (
+        isVerifiedUser() &&
+        exists(/databases/$(database)/documents/admin_roles/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/admin_roles/$(request.auth.uid)).data.active == true
+      );
+    }
+
+    function isValidProduct(data) {
+      return data.keys().hasAll(['sku', 'name', 'category', 'priceUsd', 'stock', 'status', 'imageUrl']) &&
+        data.keys().hasOnly([
+          'sku', 'name', 'category', 'priceUsd', 'discountPriceUsd', 'stock',
+          'status', 'description', 'imageUrl', 'sizes', 'colors',
+          'isNew', 'isPopular', 'soldCount', 'createdAt', 'updatedAt'
+        ]) &&
+        data.sku is string && data.sku.size() >= 2 && data.sku.size() <= 64 &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 160 &&
+        data.category in ['shoes', 'clothing', 'bags', 'watches', 'accessories'] &&
+        data.priceUsd is number && data.priceUsd >= 0 &&
+        (!('discountPriceUsd' in data) || data.discountPriceUsd == null || (data.discountPriceUsd is number && data.discountPriceUsd >= 0)) &&
+        data.stock is int && data.stock >= 0 &&
+        data.status in ['available', 'out_of_stock'] &&
+        data.imageUrl is string && data.imageUrl.size() >= 1 && data.imageUrl.size() <= 1000 &&
+        (!('description' in data) || (data.description is string && data.description.size() <= 2000));
+    }
+
+    // Public catalog read; strictly admin-only write
+    match /products/{productId} {
+      allow get: if isValidId(productId);
+      allow list: if true;
+      allow create: if isAdmin() && isValidId(productId) && isValidProduct(incoming());
+      allow update: if isAdmin() && isValidId(productId) && isValidProduct(incoming()) &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'sku', 'name', 'category', 'priceUsd', 'discountPriceUsd', 'stock',
+          'status', 'description', 'imageUrl', 'sizes', 'colors',
+          'isNew', 'isPopular', 'soldCount', 'updatedAt'
+        ]);
+      allow delete: if isAdmin() && isValidId(productId);
+    }
+
+    // Orders contain customer PII; read only by owner or admin, writes handled by backend Admin SDK
+    match /orders/{orderId} {
+      allow get: if isValidId(orderId) && (isAdmin() || (isVerifiedUser() && resource.data.userId == request.auth.uid));
+      allow list: if isAdmin() || (isVerifiedUser() && resource.data.userId == request.auth.uid);
+      allow create, update, delete: if false;
+    }
+
+    // Customer PII directory: admin-only read, server-only write
+    match /customers/{customerId} {
+      allow get: if isAdmin() && isValidId(customerId);
+      allow list: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    // Payment logs: admin-only read, server-only write
+    match /payments/{paymentId} {
+      allow get: if isAdmin() && isValidId(paymentId);
+      allow list: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    // Admin role directory
+    match /admin_roles/{uid} {
+      allow get: if isValidId(uid) && (isAdmin() || (isVerifiedUser() && request.auth.uid == uid));
+      allow list: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    // Server-only collections (never accessible directly from client SDK)
+    match /admin_accounts/{accountId} {
+      allow read, write: if false;
+    }
+
+    match /media/{mediaId} {
+      allow read, write: if false;
+    }
+
+    match /backups/{backupId} {
+      allow get: if isAdmin() && isValidId(backupId);
+      allow list: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    // Connection check document
+    match /test/connection {
+      allow get: if true;
+      allow list, write: if false;
+    }
+  }
+}

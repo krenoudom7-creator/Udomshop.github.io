@@ -1,0 +1,6 @@
+{
+  "name": "ឧត្តម Shop",
+  "description": "វេបសាយលក់ទំនិញអនឡាញទំនើប និងប្រណីត ឧត្តម Shop — ស្បែកជើង សម្លៀកបំពាក់ កាបូប នាឡិកា និងសម្ភារៈប្រើប្រាស់ ជាមួយប្រព័ន្ធទូទាត់ ABA PayWay និងការជូនដំណឹង Telegram។",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

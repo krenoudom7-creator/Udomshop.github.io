@@ -1,0 +1,182 @@
+{
+  "entities": {
+    "Product": {
+      "title": "Product",
+      "description": "Catalog product sold in Oudom Shop",
+      "type": "object",
+      "properties": {
+        "sku": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "category": {
+          "type": "string",
+          "enum": ["shoes", "clothing", "bags", "watches", "accessories"]
+        },
+        "priceUsd": { "type": "number" },
+        "discountPriceUsd": { "type": "number" },
+        "stock": { "type": "integer" },
+        "status": {
+          "type": "string",
+          "enum": ["available", "out_of_stock"]
+        },
+        "description": { "type": "string", "maxLength": 2000 },
+        "imageUrl": { "type": "string", "maxLength": 1000 },
+        "isNew": { "type": "boolean" },
+        "isPopular": { "type": "boolean" },
+        "soldCount": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["sku", "name", "category", "priceUsd", "stock", "status", "imageUrl"]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Customer purchase order with server-computed totals and ABA PayWay status",
+      "type": "object",
+      "properties": {
+        "orderNumber": { "type": "string", "minLength": 4, "maxLength": 64 },
+        "customerId": { "type": "string", "maxLength": 128 },
+        "customerName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "customerPhone": { "type": "string", "minLength": 6, "maxLength": 32 },
+        "shippingAddress": { "type": "string", "minLength": 3, "maxLength": 400 },
+        "subtotalUsd": { "type": "number" },
+        "shippingFeeUsd": { "type": "number" },
+        "discountUsd": { "type": "number" },
+        "totalUsd": { "type": "number" },
+        "totalKhr": { "type": "integer" },
+        "currency": { "type": "string", "enum": ["USD", "KHR"] },
+        "paymentMethod": { "type": "string", "enum": ["aba_payway", "aba_khqr"] },
+        "paymentStatus": { "type": "string", "enum": ["pending", "paid", "failed"] },
+        "orderStatus": {
+          "type": "string",
+          "enum": ["pending", "paid", "processing", "shipping", "completed", "cancelled", "failed"]
+        },
+        "abaTranId": { "type": "string", "maxLength": 64 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "orderNumber",
+        "customerName",
+        "customerPhone",
+        "shippingAddress",
+        "totalUsd",
+        "paymentMethod",
+        "paymentStatus",
+        "orderStatus"
+      ]
+    },
+    "Customer": {
+      "title": "Customer",
+      "description": "Persisted customer profile and order aggregates",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "phone": { "type": "string", "minLength": 6, "maxLength": 32 },
+        "address": { "type": "string", "maxLength": 400 },
+        "totalOrders": { "type": "integer" },
+        "totalSpentUsd": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "phone", "totalOrders", "totalSpentUsd"]
+    },
+    "PaymentLog": {
+      "title": "PaymentLog",
+      "description": "Server-verified ABA PayWay payment history and callbacks",
+      "type": "object",
+      "properties": {
+        "orderId": { "type": "string", "maxLength": 128 },
+        "tranId": { "type": "string", "maxLength": 64 },
+        "amountUsd": { "type": "number" },
+        "currency": { "type": "string", "enum": ["USD", "KHR"] },
+        "status": { "type": "string", "enum": ["pending", "paid", "failed"] },
+        "provider": { "type": "string", "maxLength": 64 },
+        "verifiedByServer": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["orderId", "tranId", "amountUsd", "status", "verifiedByServer"]
+    },
+    "AdminRole": {
+      "title": "AdminRole",
+      "description": "Authorized admin role mapping by Firebase UID",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "maxLength": 160 },
+        "role": { "type": "string", "enum": ["super_admin", "manager", "staff"] },
+        "active": { "type": "boolean" }
+      },
+      "required": ["uid", "email", "role", "active"]
+    },
+    "AdminAccount": {
+      "title": "AdminAccount",
+      "description": "Server-managed hashed admin credentials and RBAC",
+      "type": "object",
+      "properties": {
+        "username": { "type": "string", "minLength": 3, "maxLength": 64 },
+        "role": { "type": "string", "enum": ["super_admin", "manager", "staff"] },
+        "active": { "type": "boolean" }
+      },
+      "required": ["username", "role", "active"]
+    },
+    "MediaAsset": {
+      "title": "MediaAsset",
+      "description": "Optimized uploaded product media stored permanently",
+      "type": "object",
+      "properties": {
+        "mimeType": { "type": "string", "maxLength": 64 },
+        "sizeBytes": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["mimeType", "sizeBytes"]
+    },
+    "DatabaseBackup": {
+      "title": "DatabaseBackup",
+      "description": "Database snapshot metadata for backup & restore",
+      "type": "object",
+      "properties": {
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "productCount": { "type": "integer" },
+        "orderCount": { "type": "integer" },
+        "customerCount": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["createdBy", "productCount", "orderCount"]
+    }
+  },
+  "firestore": {
+    "/products/{productId}": {
+      "schema": { "$ref": "#/entities/Product" },
+      "description": "Public storefront product catalog; writable only by verified admins"
+    },
+    "/orders/{orderId}": {
+      "schema": { "$ref": "#/entities/Order" },
+      "description": "Customer orders containing PII; readable by owner or admin, writable by server/admin"
+    },
+    "/customers/{customerId}": {
+      "schema": { "$ref": "#/entities/Customer" },
+      "description": "Customer directory with PII; admin-only access"
+    },
+    "/payments/{paymentId}": {
+      "schema": { "$ref": "#/entities/PaymentLog" },
+      "description": "ABA PayWay payment verification records; admin-only access"
+    },
+    "/admin_roles/{uid}": {
+      "schema": { "$ref": "#/entities/AdminRole" },
+      "description": "Firebase Auth admin role directory"
+    },
+    "/admin_accounts/{accountId}": {
+      "schema": { "$ref": "#/entities/AdminAccount" },
+      "description": "Server-only hashed admin accounts"
+    },
+    "/media/{mediaId}": {
+      "schema": { "$ref": "#/entities/MediaAsset" },
+      "description": "Uploaded product images"
+    },
+    "/backups/{backupId}": {
+      "schema": { "$ref": "#/entities/DatabaseBackup" },
+      "description": "Periodic database backup records"
+    }
+  }
+}

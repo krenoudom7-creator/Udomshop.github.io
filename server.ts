@@ -1,0 +1,1418 @@
+import 'dotenv/config';
+import express from 'express';
+import type { NextFunction, Request, Response } from 'express';
+import cookieParser from 'cookie-parser';
+import rateLimit from 'express-rate-limit';
+import multer from 'multer';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { createServer as createViteServer } from 'vite';
+import { adminAuth, adminStorage, firebaseConfig } from './src/server/firebaseAdmin.ts';
+import { mutateDb, newId, readDb, writePhysicalBackupFile } from './src/server/db.ts';
+import { ensureInitialDataSeeded } from './src/server/seedCatalog.ts';
+import { createAbaPayWayPurchase, getAbaConfig, verifyAbaTransaction } from './src/server/abaPayWay.ts';
+import { isTelegramConfigured, sendOrderTelegramNotification, sendRawTelegramMessage } from './src/server/telegram.ts';
+import type {
+  AdminRole,
+  BackupSnapshot,
+  CurrencyCode,
+  DashboardStats,
+  Order,
+  OrderItem,
+  OrderStatus,
+  PaymentMethod,
+  Product,
+  ProductCategory,
+} from './src/types/shop.ts';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const PORT = Number(process.env.PORT || 3000);
+const KHR_RATE = Number(process.env.KHR_EXCHANGE_RATE || 4100);
+const FREE_SHIPPING_THRESHOLD_USD = 50;
+const STANDARD_SHIPPING_FEE_USD = 2.0;
+
+const SESSION_SECRET =
+  process.env.SESSION_SECRET?.trim() ||
+  crypto.createHash('sha256').update(`${firebaseConfig.projectId}-oudom-shop-session`).digest('hex');
+
+const ADMIN_ACCESS_CODE = process.env.ADMIN_ACCESS_CODE?.trim() || 'OUDOM-2026-SEC';
+const SUPER_ADMIN_EMAIL = (process.env.SUPER_ADMIN_EMAIL?.trim() || 'krenoudom7@gmail.com').toLowerCase();
+
+interface AdminJwtPayload {
+  id: string;
+  username: string;
+  displayName: string;
+  role: AdminRole;
+  email?: string;
+}
+
+interface AdminRequest extends Request {
+  admin?: AdminJwtPayload;
+}
+
+function getAppBaseUrl(req: Request): string {
+  if (process.env.APP_URL && process.env.APP_URL !== 'MY_APP_URL') {
+    return process.env.APP_URL.replace(/\/$/, '');
+  }
+  const proto = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'https';
+  const host = req.headers['x-forwarded-host'] || req.get('host');
+  return `${proto}://${host}`;
+}
+
+function signAdminToken(payload: AdminJwtPayload): string {
+  return jwt.sign(payload, SESSION_SECRET, { expiresIn: '12h' });
+}
+
+function setSessionCookie(res: Response, token: string) {
+  res.cookie('oudom_admin_session', token, {
+    httpOnly: true,
+    secure: true,
+    sameSite: 'none',
+    maxAge: 12 * 60 * 60 * 1000,
+    path: '/',
+  });
+}
+
+function requireAdminAuth(req: AdminRequest, res: Response, next: NextFunction) {
+  const authHeader = req.headers.authorization;
+  const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
+  const cookieToken = req.cookies?.oudom_admin_session as string | undefined;
+  const token = bearerToken || cookieToken;
+
+  if (!token) {
+    return res.status(401).json({ error: 'សូមចូលគណនី Admin ជាមុនសិន (Unauthorized)' });
+  }
+
+  try {
+    const decoded = jwt.verify(token, SESSION_SECRET) as AdminJwtPayload;
+    req.admin = decoded;
+    next();
+  } catch {
+    return res.status(401).json({ error: 'Session ផុតកំណត់ ឬមិនត្រឹមត្រូវ។ សូម Login ម្តងទៀត។' });
+  }
+}
+
+function requireRole(allowedRoles: AdminRole[]) {
+  return (req: AdminRequest, res: Response, next: NextFunction) => {
+    if (!req.admin || !allowedRoles.includes(req.admin.role)) {
+      return res.status(403).json({
+        error: 'អ្នកមិនមានសិទ្ធិគ្រប់គ្រាន់សម្រាប់ប្រតិបត្តិការនេះទេ (Forbidden)',
+      });
+    }
+    next();
+  };
+}
+
+async function runPeriodicBackupIfNeeded(
+  trigger: 'manual' | 'auto_scheduled',
+  createdBy: string
+): Promise<BackupSnapshot | null> {
+  try {
+    const current = await readDb();
+    if (trigger === 'auto_scheduled' && current.backups.length > 0) {
+      const latest = current.backups[0];
+      if (Date.now() - new Date(latest.createdAt).getTime() < 24 * 60 * 60 * 1000) {
+        return null;
+      }
+    }
+
+    const snapshot = await mutateDb(async (db) => {
+      const snap: BackupSnapshot = {
+        id: newId('bkp'),
+        createdBy,
+        productCount: db.products.length,
+        orderCount: db.orders.length,
+        customerCount: db.customers.length,
+        paymentCount: db.payments.length,
+        trigger,
+        createdAt: new Date().toISOString(),
+      };
+      db.backups.unshift(snap);
+      if (db.backups.length > 50) {
+        db.backups = db.backups.slice(0, 50);
+      }
+      await writePhysicalBackupFile(snap.id, db);
+      return snap;
+    });
+
+    return snapshot;
+  } catch (error) {
+    console.error('Backup snapshot failed:', error);
+    return null;
+  }
+}
+
+async function finalizePaidOrder(
+  orderId: string,
+  apv?: string,
+  statusDetail?: string
+): Promise<Order | null> {
+  const outcome = await mutateDb((db) => {
+    const order = db.orders.find((o) => o.id === orderId);
+    if (!order) return { order: null, becamePaidNow: false };
+    if (order.paymentStatus === 'paid') {
+      return { order, becamePaidNow: false };
+    }
+
+    const now = new Date().toISOString();
+
+    for (const item of order.items) {
+      const prod = db.products.find((p) => p.id === item.productId);
+      if (prod) {
+        const nextStock = Math.max(0, Number(prod.stock || 0) - item.quantity);
+        prod.stock = nextStock;
+        prod.status = nextStock <= 0 ? 'out_of_stock' : prod.status;
+        prod.soldCount = Number(prod.soldCount || 0) + item.quantity;
+        prod.updatedAt = now;
+      }
+    }
+
+    const cust = db.customers.find((c) => c.id === order.customerId);
+    if (cust) {
+      cust.totalSpentUsd = Number((Number(cust.totalSpentUsd || 0) + order.totalUsd).toFixed(2));
+    }
+
+    order.paymentStatus = 'paid';
+    if (order.orderStatus === 'pending') {
+      order.orderStatus = 'paid';
+    }
+    order.updatedAt = now;
+
+    db.payments.unshift({
+      id: newId('pay'),
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      tranId: order.abaTranId,
+      amountUsd: order.totalUsd,
+      amountKhr: order.totalKhr,
+      currency: order.currency,
+      method: order.paymentMethod,
+      status: 'paid',
+      provider: 'ABA PayWay',
+      verifiedByServer: true,
+      apv: apv || '',
+      statusDetail: statusDetail || 'Payment confirmed',
+      createdAt: now,
+    });
+
+    return { order: { ...order }, becamePaidNow: true };
+  });
+
+  if (outcome.order && outcome.becamePaidNow) {
+    await sendOrderTelegramNotification(outcome.order, 'payment_paid');
+  }
+
+  return outcome.order;
+}
+
+async function startServer() {
+  await ensureInitialDataSeeded();
+  const app = express();
+  app.set('trust proxy', 1);
+
+  app.use(cookieParser());
+  app.use(express.json({ limit: '10mb' }));
+  app.use(express.urlencoded({ extended: true }));
+
+  app.use((_req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    next();
+  });
+
+  const apiLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 180,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'សំណើច្រើនពេក សូមរង់ចាំបន្តិច។' },
+  });
+
+  const loginLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 15,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'ការព្យាយាមចូលគណនីច្រើនពេក។ សូមព្យាយាមម្តងទៀតក្រោយ ១៥ នាទី។' },
+  });
+
+  app.use('/api', apiLimiter);
+
+  const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 6 * 1024 * 1024 },
+  });
+
+  // Public storefront config
+  app.get('/api/config/public', async (_req, res) => {
+    await ensureInitialDataSeeded();
+    res.json({
+      khrRate: KHR_RATE,
+      freeShippingThresholdUsd: FREE_SHIPPING_THRESHOLD_USD,
+      standardShippingFeeUsd: STANDARD_SHIPPING_FEE_USD,
+      abaConfigured: Boolean(getAbaConfig()),
+      telegramConfigured: isTelegramConfigured(),
+    });
+  });
+
+  // Public: list products
+  app.get('/api/products', async (req, res) => {
+    try {
+      await ensureInitialDataSeeded();
+      const db = await readDb();
+      let items = [...db.products].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+
+      const category = String(req.query.category || '').trim();
+      const search = String(req.query.search || '').trim().toLowerCase();
+      const filter = String(req.query.filter || '').trim();
+
+      if (category && category !== 'all') {
+        items = items.filter((p) => p.category === category);
+      }
+
+      if (filter === 'new') {
+        items = items.filter((p) => p.isNew);
+      } else if (filter === 'popular') {
+        items = items.filter((p) => p.isPopular || p.soldCount > 0);
+      } else if (filter === 'sale') {
+        items = items.filter(
+          (p) => p.discountPriceUsd !== null && p.discountPriceUsd < p.priceUsd
+        );
+      }
+
+      if (search) {
+        items = items.filter(
+          (p) =>
+            p.name.toLowerCase().includes(search) ||
+            p.sku.toLowerCase().includes(search) ||
+            p.description.toLowerCase().includes(search)
+        );
+      }
+
+      res.json({ products: items });
+    } catch (error) {
+      console.error('Failed to fetch products:', error);
+      res.status(500).json({ error: 'មិនអាចទាញយកបញ្ជីផលិតផលបានទេ' });
+    }
+  });
+
+  // Public: serve uploaded product media
+  app.get('/api/media/:id', async (req, res) => {
+    try {
+      const db = await readDb();
+      const media = db.media.find((m) => m.id === req.params.id);
+      if (!media) {
+        return res.status(404).send('Not found');
+      }
+      const buffer = Buffer.from(media.base64Data, 'base64');
+      res.setHeader('Content-Type', media.mimeType || 'image/webp');
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      res.send(buffer);
+    } catch (error) {
+      console.error('Failed to serve media:', error);
+      res.status(500).send('Error serving media');
+    }
+  });
+
+  // Public: Create Order & Initiate ABA PayWay
+  app.post('/api/orders', async (req, res) => {
+    try {
+      await ensureInitialDataSeeded();
+      const body = req.body as {
+        customerName?: string;
+        customerPhone?: string;
+        shippingAddress?: string;
+        notes?: string;
+        currency?: CurrencyCode;
+        paymentMethod?: PaymentMethod;
+        items?: Array<{
+          productId: string;
+          quantity: number;
+          selectedSize?: string;
+          selectedColor?: string;
+        }>;
+      };
+
+      const customerName = String(body.customerName || '').trim();
+      const customerPhone = String(body.customerPhone || '').trim();
+      const shippingAddress = String(body.shippingAddress || '').trim();
+      const notes = String(body.notes || '').trim().slice(0, 300);
+      const currency: CurrencyCode = body.currency === 'KHR' ? 'KHR' : 'USD';
+      const paymentMethod: PaymentMethod =
+        body.paymentMethod === 'aba_khqr' ? 'aba_khqr' : 'aba_payway';
+      const reqItems = Array.isArray(body.items) ? body.items : [];
+
+      if (customerName.length < 2 || customerName.length > 120) {
+        return res.status(400).json({ error: 'សូមបញ្ចូលឈ្មោះអតិថិជនឱ្យបានត្រឹមត្រូវ' });
+      }
+      if (!/^[0-9+\-\s]{7,20}$/.test(customerPhone)) {
+        return res.status(400).json({ error: 'សូមបញ្ចូលលេខទូរស័ព្ទឱ្យបានត្រឹមត្រូវ' });
+      }
+      if (shippingAddress.length < 5 || shippingAddress.length > 400) {
+        return res.status(400).json({ error: 'សូមបញ្ចូលអាសយដ្ឋានដឹកជញ្ជូនឱ្យបានច្បាស់លាស់' });
+      }
+      if (reqItems.length === 0 || reqItems.length > 30) {
+        return res.status(400).json({ error: 'កន្ត្រកទំនិញទទេ ឬលើសចំនួនកំណត់' });
+      }
+
+      const db = await readDb();
+      const orderItems: OrderItem[] = [];
+      let subtotalUsd = 0;
+      let discountUsd = 0;
+
+      for (const reqItem of reqItems) {
+        const qty = Math.floor(Number(reqItem.quantity));
+        if (!reqItem.productId || !Number.isFinite(qty) || qty < 1 || qty > 99) {
+          return res.status(400).json({ error: 'ចំនួនទំនិញមិនត្រឹមត្រូវ' });
+        }
+
+        const product = db.products.find((p) => p.id === reqItem.productId);
+        if (!product) {
+          return res.status(404).json({ error: 'រកមិនឃើញផលិតផលក្នុងប្រព័ន្ធទេ' });
+        }
+
+        if (product.status === 'out_of_stock' || product.stock < qty) {
+          return res.status(400).json({
+            error: `ផលិតផល "${product.name}" អស់ពីស្តុក ឬសល់មិនគ្រប់ចំនួន (សល់ ${product.stock})`,
+          });
+        }
+
+        const effectivePrice =
+          product.discountPriceUsd !== null &&
+          product.discountPriceUsd >= 0 &&
+          product.discountPriceUsd < product.priceUsd
+            ? product.discountPriceUsd
+            : product.priceUsd;
+
+        const lineTotal = Number((effectivePrice * qty).toFixed(2));
+        subtotalUsd += lineTotal;
+        if (effectivePrice < product.priceUsd) {
+          discountUsd += (product.priceUsd - effectivePrice) * qty;
+        }
+
+        orderItems.push({
+          productId: product.id,
+          sku: product.sku,
+          name: product.name,
+          imageUrl: product.imageUrl,
+          quantity: qty,
+          unitPriceUsd: effectivePrice,
+          originalPriceUsd: product.priceUsd,
+          lineTotalUsd: lineTotal,
+          selectedSize: reqItem.selectedSize ? String(reqItem.selectedSize).slice(0, 32) : undefined,
+          selectedColor: reqItem.selectedColor ? String(reqItem.selectedColor).slice(0, 32) : undefined,
+        });
+      }
+
+      subtotalUsd = Number(subtotalUsd.toFixed(2));
+      discountUsd = Number(discountUsd.toFixed(2));
+      const shippingFeeUsd =
+        subtotalUsd >= FREE_SHIPPING_THRESHOLD_USD ? 0 : STANDARD_SHIPPING_FEE_USD;
+      const totalUsd = Number((subtotalUsd + shippingFeeUsd).toFixed(2));
+      const totalKhr = Math.round(totalUsd * KHR_RATE);
+
+      const now = new Date().toISOString();
+      const shortCode = crypto.randomBytes(3).toString('hex').toUpperCase();
+      const orderNumber = `ODS-${new Date().toISOString().slice(2, 10).replace(/-/g, '')}-${shortCode}`;
+      const abaTranId = `OD${Date.now()}${Math.floor(Math.random() * 90 + 10)}`;
+      const normalizedPhone = customerPhone.replace(/\s+/g, '');
+
+      // Initiate official ABA PayWay purchase request on server
+      const baseUrl = getAppBaseUrl(req);
+      const amountStr = currency === 'KHR' ? String(totalKhr) : totalUsd.toFixed(2);
+      const abaResult = await createAbaPayWayPurchase({
+        tranId: abaTranId,
+        amount: amountStr,
+        currency,
+        items: orderItems,
+        shipping: shippingFeeUsd.toFixed(2),
+        customerName,
+        customerPhone: normalizedPhone,
+        paymentMethod,
+        returnUrl: `${baseUrl}/?order=${encodeURIComponent(orderNumber)}`,
+        continueSuccessUrl: `${baseUrl}/?order=${encodeURIComponent(orderNumber)}&aba_return=1`,
+        callbackUrl: `${baseUrl}/api/payments/aba-callback`,
+      });
+
+      const createdOrder = await mutateDb((state) => {
+        let cust = state.customers.find((c) => c.phone === normalizedPhone);
+        if (!cust) {
+          cust = {
+            id: newId('cust'),
+            name: customerName,
+            phone: normalizedPhone,
+            address: shippingAddress,
+            totalOrders: 1,
+            totalSpentUsd: 0,
+            lastOrderAt: now,
+            createdAt: now,
+          };
+          state.customers.unshift(cust);
+        } else {
+          cust.name = customerName;
+          cust.address = shippingAddress;
+          cust.totalOrders += 1;
+          cust.lastOrderAt = now;
+        }
+
+        const newOrder: Order = {
+          id: newId('ord'),
+          orderNumber,
+          customerId: cust.id,
+          customerName,
+          customerPhone: normalizedPhone,
+          shippingAddress,
+          notes,
+          items: orderItems,
+          subtotalUsd,
+          shippingFeeUsd,
+          discountUsd,
+          totalUsd,
+          totalKhr,
+          currency,
+          paymentMethod,
+          paymentStatus: 'pending',
+          orderStatus: 'pending',
+          abaTranId,
+          ...(abaResult.qrString ? { abaQrString: abaResult.qrString } : {}),
+          ...(abaResult.checkoutUrl ? { abaCheckoutUrl: abaResult.checkoutUrl } : {}),
+          ...(abaResult.payload ? { abaPayload: abaResult.payload } : {}),
+          abaMode: abaResult.configured ? 'live' : 'unconfigured',
+          telegramNotified: false,
+          createdAt: now,
+          updatedAt: now,
+        };
+
+        state.orders.unshift(newOrder);
+
+        state.payments.unshift({
+          id: newId('pay'),
+          orderId: newOrder.id,
+          orderNumber,
+          tranId: abaTranId,
+          amountUsd: totalUsd,
+          amountKhr: totalKhr,
+          currency,
+          method: paymentMethod,
+          status: 'pending',
+          provider: 'ABA PayWay',
+          verifiedByServer: false,
+          statusDetail: abaResult.rawError
+            ? `ABA PayWay notice: ${abaResult.rawError}`
+            : abaResult.configured
+            ? 'Awaiting ABA PayWay completion'
+            : 'Awaiting Merchant ABA PayWay credentials configuration',
+          createdAt: now,
+        });
+
+        return { ...newOrder };
+      });
+
+      const telegramSent = await sendOrderTelegramNotification(createdOrder, 'new_order');
+      if (telegramSent) {
+        await mutateDb((state) => {
+          const target = state.orders.find((o) => o.id === createdOrder.id);
+          if (target) target.telegramNotified = true;
+        });
+        createdOrder.telegramNotified = true;
+      }
+
+      res.status(201).json({
+        order: createdOrder,
+        abaError: abaResult.rawError,
+      });
+    } catch (error) {
+      console.error('Order creation failed:', error);
+      res.status(500).json({ error: 'មានបញ្ហាក្នុងការបង្កើតការបញ្ជាទិញ។ សូមព្យាយាមម្តងទៀត។' });
+    }
+  });
+
+  // Public: Customer Order Lookup
+  app.get('/api/orders/lookup', async (req, res) => {
+    try {
+      const orderNumber = String(req.query.orderNumber || '').trim().toUpperCase();
+      const phone = String(req.query.phone || '').trim().replace(/\s+/g, '');
+      if (!orderNumber || !phone) {
+        return res.status(400).json({ error: 'សូមបញ្ចូលលេខកូដបញ្ជាទិញ និងលេខទូរស័ព្ទ' });
+      }
+
+      const db = await readDb();
+      const order = db.orders.find((o) => o.orderNumber === orderNumber);
+      if (!order) {
+        return res.status(404).json({ error: 'រកមិនឃើញការបញ្ជាទិញនេះទេ' });
+      }
+      if (order.customerPhone !== phone) {
+        return res.status(403).json({ error: 'លេខទូរស័ព្ទមិនត្រូវគ្នានឹងការបញ្ជាទិញនេះទេ' });
+      }
+
+      res.json({ order });
+    } catch (error) {
+      console.error('Order lookup error:', error);
+      res.status(500).json({ error: 'មិនអាចស្វែងរកការបញ្ជាទិញបានទេ' });
+    }
+  });
+
+  // Server-to-server ABA PayWay Pushback Callback
+  app.post('/api/payments/aba-callback', async (req, res) => {
+    try {
+      const tranId = String(req.body?.tran_id || req.query?.tran_id || '').trim();
+      if (!tranId) {
+        return res.status(400).json({ error: 'Missing tran_id' });
+      }
+
+      const db = await readDb();
+      const order = db.orders.find((o) => o.abaTranId === tranId);
+      if (!order) {
+        return res.status(404).json({ error: 'Order not found' });
+      }
+
+      const verification = await verifyAbaTransaction(tranId);
+      if (verification.verifiedPaid) {
+        await finalizePaidOrder(order.id, verification.apv, verification.message);
+        return res.json({ status: 'ok', paymentStatus: 'paid' });
+      }
+
+      if (verification.status === 'failed') {
+        const failedOrder = await mutateDb((state) => {
+          const target = state.orders.find((o) => o.id === order.id);
+          if (!target) return null;
+          target.paymentStatus = 'failed';
+          target.orderStatus = 'failed';
+          target.updatedAt = new Date().toISOString();
+          return { ...target };
+        });
+        if (failedOrder) {
+          await sendOrderTelegramNotification(failedOrder, 'order_failed');
+        }
+        return res.json({ status: 'ok', paymentStatus: 'failed' });
+      }
+
+      return res.json({ status: 'ok', paymentStatus: 'pending', message: verification.message });
+    } catch (error) {
+      console.error('ABA callback handling failed:', error);
+      res.status(500).json({ error: 'Callback verification error' });
+    }
+  });
+
+  // Public: Server-side Payment Verification Check
+  app.post('/api/payments/verify/:orderId', async (req, res) => {
+    try {
+      const db = await readDb();
+      const order = db.orders.find((o) => o.id === req.params.orderId);
+      if (!order) {
+        return res.status(404).json({ error: 'រកមិនឃើញការបញ្ជាទិញទេ' });
+      }
+
+      if (order.paymentStatus === 'paid') {
+        return res.json({
+          order,
+          verification: { verifiedPaid: true, status: 'paid', message: 'បានទូទាត់រួចរាល់' },
+        });
+      }
+
+      const verification = await verifyAbaTransaction(order.abaTranId);
+      if (verification.verifiedPaid) {
+        const finalized = await finalizePaidOrder(order.id, verification.apv, verification.message);
+        return res.json({ order: finalized || order, verification });
+      }
+
+      if (verification.status === 'failed') {
+        const failedOrder = await mutateDb((state) => {
+          const target = state.orders.find((o) => o.id === order.id);
+          if (!target) return null;
+          target.paymentStatus = 'failed';
+          target.orderStatus = 'failed';
+          target.updatedAt = new Date().toISOString();
+          return { ...target };
+        });
+        if (failedOrder) {
+          await sendOrderTelegramNotification(failedOrder, 'order_failed');
+        }
+        return res.json({ order: failedOrder || order, verification });
+      }
+
+      res.json({ order, verification });
+    } catch (error) {
+      console.error('Payment verification error:', error);
+      res.status(500).json({ error: 'មិនអាចផ្ទៀងផ្ទាត់ការទូទាត់បានទេ' });
+    }
+  });
+
+  // ---------------- ADMIN AUTHENTICATION ----------------
+
+  app.post('/api/admin/login', loginLimiter, async (req, res) => {
+    try {
+      await ensureInitialDataSeeded();
+      const username = String(req.body?.username || '').trim();
+      const password = String(req.body?.password || '');
+      const accessCode = String(req.body?.accessCode || '').trim();
+
+      if (!username || !password || !accessCode) {
+        return res.status(400).json({ error: 'សូមបំពេញ Username, Password និង Admin Access Code' });
+      }
+
+      if (accessCode !== ADMIN_ACCESS_CODE) {
+        return res.status(401).json({ error: 'លេខកូដសម្ងាត់ Admin (Access Code) មិនត្រឹមត្រូវទេ' });
+      }
+
+      const db = await readDb();
+      const account = db.admin_accounts.find((a) => a.username === username);
+      if (!account) {
+        return res.status(401).json({ error: 'ឈ្មោះអ្នកប្រើប្រាស់ ឬពាក្យសម្ងាត់មិនត្រឹមត្រូវទេ' });
+      }
+
+      if (!account.active) {
+        return res.status(403).json({ error: 'គណនី Admin នេះត្រូវបានផ្អាកដំណើរការ' });
+      }
+
+      const passwordValid = await bcrypt.compare(password, account.passwordHash);
+      if (!passwordValid) {
+        return res.status(401).json({ error: 'ឈ្មោះអ្នកប្រើប្រាស់ ឬពាក្យសម្ងាត់មិនត្រឹមត្រូវទេ' });
+      }
+
+      await mutateDb((state) => {
+        const target = state.admin_accounts.find((a) => a.id === account.id);
+        if (target) target.lastLoginAt = new Date().toISOString();
+      });
+
+      const userPayload: AdminJwtPayload = {
+        id: account.id,
+        username: account.username,
+        displayName: account.displayName,
+        role: account.role,
+        email: account.email,
+      };
+
+      const token = signAdminToken(userPayload);
+      setSessionCookie(res, token);
+      res.json({ user: userPayload, token });
+    } catch (error) {
+      console.error('Admin login error:', error);
+      res.status(500).json({ error: 'មានបញ្ហាក្នុងការចូលប្រើប្រព័ន្ធ Admin' });
+    }
+  });
+
+  app.post('/api/admin/google-login', loginLimiter, async (req, res) => {
+    try {
+      await ensureInitialDataSeeded();
+      const idToken = String(req.body?.idToken || '').trim();
+      const accessCode = String(req.body?.accessCode || '').trim();
+
+      if (!idToken || !accessCode) {
+        return res.status(400).json({ error: 'សូមផ្ទៀងផ្ទាត់ Google Token និង Admin Access Code' });
+      }
+
+      if (accessCode !== ADMIN_ACCESS_CODE) {
+        return res.status(401).json({ error: 'លេខកូដសម្ងាត់ Admin (Access Code) មិនត្រឹមត្រូវទេ' });
+      }
+
+      const decoded = await adminAuth.verifyIdToken(idToken);
+      const email = (decoded.email || '').toLowerCase();
+      if (!decoded.email_verified || !email) {
+        return res.status(403).json({ error: 'អ៊ីមែល Google មិនទាន់បានផ្ទៀងផ្ទាត់ទេ' });
+      }
+
+      const db = await readDb();
+      let role: AdminRole | null = null;
+      if (email === SUPER_ADMIN_EMAIL) {
+        role = 'super_admin';
+        await mutateDb((state) => {
+          const existing = state.admin_roles.find((r) => r.uid === decoded.uid);
+          if (!existing) {
+            state.admin_roles.push({
+              uid: decoded.uid,
+              email,
+              role: 'super_admin',
+              active: true,
+              updatedAt: new Date().toISOString(),
+            });
+          }
+        });
+      } else {
+        const matched = db.admin_roles.find((r) => r.uid === decoded.uid && r.active);
+        if (matched) role = matched.role as AdminRole;
+      }
+
+      if (!role) {
+        return res.status(403).json({ error: 'គណនី Google នេះមិនមានសិទ្ធិ Admin ទេ' });
+      }
+
+      const userPayload: AdminJwtPayload = {
+        id: decoded.uid,
+        username: email.split('@')[0],
+        displayName: decoded.name || email,
+        role,
+        email,
+      };
+
+      const token = signAdminToken(userPayload);
+      setSessionCookie(res, token);
+      res.json({ user: userPayload, token });
+    } catch (error) {
+      console.error('Google admin login error:', error);
+      res.status(401).json({ error: 'ការផ្ទៀងផ្ទាត់ Google Sign-In បរាជ័យ' });
+    }
+  });
+
+  app.post('/api/admin/logout', (_req, res) => {
+    res.clearCookie('oudom_admin_session', { path: '/' });
+    res.json({ ok: true });
+  });
+
+  app.get('/api/admin/me', requireAdminAuth, (req: AdminRequest, res) => {
+    res.json({ user: req.admin });
+  });
+
+  // ---------------- ADMIN STATS & DASHBOARD ----------------
+
+  app.get('/api/admin/stats', requireAdminAuth, async (req: AdminRequest, res) => {
+    try {
+      await ensureInitialDataSeeded();
+      void runPeriodicBackupIfNeeded('auto_scheduled', req.admin?.username || 'system');
+
+      const db = await readDb();
+      const products = db.products;
+      const orders = db.orders;
+      const outOfStockCount = products.filter(
+        (p) => p.status === 'out_of_stock' || p.stock <= 0
+      ).length;
+
+      const paidOrders = orders.filter((o) => o.paymentStatus === 'paid');
+      const now = new Date();
+      const todayKey = now.toISOString().slice(0, 10);
+      const monthKey = now.toISOString().slice(0, 7);
+
+      let dailyRevenueUsd = 0;
+      let monthlyRevenueUsd = 0;
+      let totalRevenueUsd = 0;
+
+      for (const order of paidOrders) {
+        const amt = Number(order.totalUsd || 0);
+        totalRevenueUsd += amt;
+        if (order.createdAt.startsWith(todayKey)) {
+          dailyRevenueUsd += amt;
+        }
+        if (order.createdAt.startsWith(monthKey)) {
+          monthlyRevenueUsd += amt;
+        }
+      }
+
+      const salesChart: DashboardStats['salesChart'] = [];
+      for (let i = 6; i >= 0; i--) {
+        const d = new Date();
+        d.setDate(d.getDate() - i);
+        const dateStr = d.toISOString().slice(0, 10);
+        const dayPaid = paidOrders.filter((o) => o.createdAt.startsWith(dateStr));
+        const dayAll = orders.filter((o) => o.createdAt.startsWith(dateStr));
+        salesChart.push({
+          date: dateStr,
+          label: `${d.getDate()}/${d.getMonth() + 1}`,
+          revenueUsd: Number(dayPaid.reduce((acc, o) => acc + o.totalUsd, 0).toFixed(2)),
+          orders: dayAll.length,
+        });
+      }
+
+      const productSalesMap = new Map<
+        string,
+        { id: string; name: string; sku: string; imageUrl: string; soldCount: number; revenueUsd: number }
+      >();
+      for (const order of paidOrders) {
+        for (const item of order.items) {
+          const entry = productSalesMap.get(item.productId) || {
+            id: item.productId,
+            name: item.name,
+            sku: item.sku,
+            imageUrl: item.imageUrl,
+            soldCount: 0,
+            revenueUsd: 0,
+          };
+          entry.soldCount += item.quantity;
+          entry.revenueUsd = Number((entry.revenueUsd + item.lineTotalUsd).toFixed(2));
+          productSalesMap.set(item.productId, entry);
+        }
+      }
+
+      const topProducts = Array.from(productSalesMap.values())
+        .sort((a, b) => b.revenueUsd - a.revenueUsd || b.soldCount - a.soldCount)
+        .slice(0, 5);
+
+      const stats: DashboardStats = {
+        totalProducts: products.length,
+        totalOrders: orders.length,
+        totalCustomers: db.customers.length,
+        outOfStockCount,
+        dailyRevenueUsd: Number(dailyRevenueUsd.toFixed(2)),
+        monthlyRevenueUsd: Number(monthlyRevenueUsd.toFixed(2)),
+        totalRevenueUsd: Number(totalRevenueUsd.toFixed(2)),
+        khrRate: KHR_RATE,
+        topProducts,
+        salesChart,
+        integrations: {
+          abaConfigured: Boolean(getAbaConfig()),
+          telegramConfigured: isTelegramConfigured(),
+          databaseConnected: true,
+        },
+      };
+
+      res.json({ stats });
+    } catch (error) {
+      console.error('Failed to compute dashboard stats:', error);
+      res.status(500).json({ error: 'មិនអាចទាញយកស្ថិតិ Dashboard បានទេ' });
+    }
+  });
+
+  // ---------------- ADMIN PRODUCT MANAGEMENT ----------------
+
+  app.post(
+    '/api/admin/upload',
+    requireAdminAuth,
+    requireRole(['super_admin', 'manager']),
+    upload.single('image'),
+    async (req: AdminRequest, res) => {
+      try {
+        if (!req.file) {
+          return res.status(400).json({ error: 'សូមជ្រើសរើសរូបភាពជាមុនសិន' });
+        }
+
+        const allowedMimes = ['image/jpeg', 'image/png', 'image/webp', 'image/avif'];
+        if (!allowedMimes.includes(req.file.mimetype)) {
+          return res.status(400).json({ error: 'គាំទ្រតែរូបភាព JPG, PNG, WebP ឬ AVIF ប៉ុណ្ណោះ' });
+        }
+
+        // Attempt Cloud Storage first if IAM is configured, otherwise persist cleanly in permanent media store
+        try {
+          const bucket = adminStorage.bucket();
+          const ext = req.file.mimetype.split('/')[1] || 'webp';
+          const fileName = `products/${Date.now()}-${crypto.randomBytes(6).toString('hex')}.${ext}`;
+          const file = bucket.file(fileName);
+          await file.save(req.file.buffer, {
+            metadata: { contentType: req.file.mimetype },
+          });
+          await file.makePublic();
+          const publicUrl = `https://storage.googleapis.com/${bucket.name}/${fileName}`;
+          return res.json({ imageUrl: publicUrl, storage: 'cloud_storage' });
+        } catch {
+          const mediaId = await mutateDb((db) => {
+            const id = newId('img');
+            db.media.push({
+              id,
+              mimeType: req.file!.mimetype,
+              sizeBytes: req.file!.size,
+              base64Data: req.file!.buffer.toString('base64'),
+              uploadedBy: req.admin?.username || 'admin',
+              createdAt: new Date().toISOString(),
+            });
+            return id;
+          });
+          return res.json({ imageUrl: `/api/media/${mediaId}`, storage: 'persistent_media' });
+        }
+      } catch (error) {
+        console.error('Upload error:', error);
+        res.status(500).json({ error: 'បរាជ័យក្នុងការ Upload រូបភាព' });
+      }
+    }
+  );
+
+  app.post(
+    '/api/admin/products',
+    requireAdminAuth,
+    requireRole(['super_admin', 'manager']),
+    async (req: AdminRequest, res) => {
+      try {
+        const body = req.body as Partial<Product>;
+        const name = String(body.name || '').trim();
+        const sku = String(body.sku || '').trim().toUpperCase();
+        const category = body.category as ProductCategory;
+        const priceUsd = Number(body.priceUsd);
+        const discountPriceUsd =
+          body.discountPriceUsd !== null &&
+          body.discountPriceUsd !== undefined &&
+          String(body.discountPriceUsd) !== ''
+            ? Number(body.discountPriceUsd)
+            : null;
+        const stock = Math.max(0, Math.floor(Number(body.stock || 0)));
+        const description = String(body.description || '').trim();
+        const imageUrl = String(body.imageUrl || '').trim();
+        const status = body.status === 'out_of_stock' || stock <= 0 ? 'out_of_stock' : 'available';
+        const sizes = Array.isArray(body.sizes) ? body.sizes.map((s) => String(s).trim()).filter(Boolean) : [];
+        const colors = Array.isArray(body.colors) ? body.colors.map((c) => String(c).trim()).filter(Boolean) : [];
+
+        if (!name || name.length > 160) {
+          return res.status(400).json({ error: 'ឈ្មោះផលិតផលមិនត្រឹមត្រូវ' });
+        }
+        if (!sku || sku.length < 2) {
+          return res.status(400).json({ error: 'សូមបញ្ចូលលេខកូដ SKU' });
+        }
+        if (!['shoes', 'clothing', 'bags', 'watches', 'accessories'].includes(category)) {
+          return res.status(400).json({ error: 'ប្រភេទផលិតផលមិនត្រឹមត្រូវ' });
+        }
+        if (!Number.isFinite(priceUsd) || priceUsd < 0) {
+          return res.status(400).json({ error: 'តម្លៃលក់មិនត្រឹមត្រូវ' });
+        }
+        if (
+          discountPriceUsd !== null &&
+          (!Number.isFinite(discountPriceUsd) || discountPriceUsd < 0 || discountPriceUsd >= priceUsd)
+        ) {
+          return res.status(400).json({ error: 'តម្លៃបញ្ចុះតម្លៃត្រូវតែទាបជាងតម្លៃដើម' });
+        }
+        if (!imageUrl) {
+          return res.status(400).json({ error: 'សូម Upload រូបភាពផលិតផល' });
+        }
+
+        const now = new Date().toISOString();
+        const product = await mutateDb((db) => {
+          const item: Product = {
+            id: newId('prod'),
+            sku,
+            name,
+            category,
+            priceUsd: Number(priceUsd.toFixed(2)),
+            discountPriceUsd: discountPriceUsd !== null ? Number(discountPriceUsd.toFixed(2)) : null,
+            stock,
+            status,
+            description,
+            imageUrl,
+            sizes,
+            colors,
+            isNew: Boolean(body.isNew ?? true),
+            isPopular: Boolean(body.isPopular ?? false),
+            soldCount: 0,
+            createdAt: now,
+            updatedAt: now,
+          };
+          db.products.unshift(item);
+          return item;
+        });
+
+        res.status(201).json({ product });
+      } catch (error) {
+        console.error('Create product failed:', error);
+        res.status(500).json({ error: 'មិនអាចបន្ថែមផលិតផលបានទេ' });
+      }
+    }
+  );
+
+  app.put(
+    '/api/admin/products/:id',
+    requireAdminAuth,
+    requireRole(['super_admin', 'manager']),
+    async (req: AdminRequest, res) => {
+      try {
+        const db = await readDb();
+        const existing = db.products.find((p) => p.id === req.params.id);
+        if (!existing) {
+          return res.status(404).json({ error: 'រកមិនឃើញផលិតផលទេ' });
+        }
+
+        const body = req.body as Partial<Product>;
+        const name = body.name !== undefined ? String(body.name).trim() : existing.name;
+        const sku = body.sku !== undefined ? String(body.sku).trim().toUpperCase() : existing.sku;
+        const category = (body.category || existing.category) as ProductCategory;
+        const priceUsd = body.priceUsd !== undefined ? Number(body.priceUsd) : existing.priceUsd;
+        const discountPriceUsd =
+          body.discountPriceUsd !== undefined
+            ? body.discountPriceUsd === null || String(body.discountPriceUsd) === ''
+              ? null
+              : Number(body.discountPriceUsd)
+            : existing.discountPriceUsd;
+        const stock =
+          body.stock !== undefined ? Math.max(0, Math.floor(Number(body.stock))) : existing.stock;
+        const status =
+          body.status !== undefined
+            ? body.status
+            : stock <= 0
+            ? 'out_of_stock'
+            : 'available';
+
+        if (!name || !sku || !Number.isFinite(priceUsd) || priceUsd < 0) {
+          return res.status(400).json({ error: 'ទិន្នន័យផលិតផលមិនត្រឹមត្រូវ' });
+        }
+        if (discountPriceUsd !== null && (discountPriceUsd < 0 || discountPriceUsd >= priceUsd)) {
+          return res.status(400).json({ error: 'តម្លៃបញ្ចុះតម្លៃត្រូវតែទាបជាងតម្លៃដើម' });
+        }
+
+        const updatedProduct = await mutateDb((state) => {
+          const target = state.products.find((p) => p.id === req.params.id);
+          if (!target) return null;
+          target.sku = sku;
+          target.name = name;
+          target.category = category;
+          target.priceUsd = Number(priceUsd.toFixed(2));
+          target.discountPriceUsd =
+            discountPriceUsd !== null ? Number(discountPriceUsd.toFixed(2)) : null;
+          target.stock = stock;
+          target.status = stock <= 0 ? 'out_of_stock' : status;
+          if (body.description !== undefined) target.description = String(body.description).trim();
+          if (body.imageUrl !== undefined) target.imageUrl = String(body.imageUrl).trim();
+          if (Array.isArray(body.sizes)) {
+            target.sizes = body.sizes.map((s) => String(s).trim()).filter(Boolean);
+          }
+          if (Array.isArray(body.colors)) {
+            target.colors = body.colors.map((c) => String(c).trim()).filter(Boolean);
+          }
+          if (body.isNew !== undefined) target.isNew = Boolean(body.isNew);
+          if (body.isPopular !== undefined) target.isPopular = Boolean(body.isPopular);
+          target.updatedAt = new Date().toISOString();
+          return { ...target };
+        });
+
+        res.json({ product: updatedProduct });
+      } catch (error) {
+        console.error('Update product failed:', error);
+        res.status(500).json({ error: 'មិនអាចកែប្រែផលិតផលបានទេ' });
+      }
+    }
+  );
+
+  app.delete(
+    '/api/admin/products/:id',
+    requireAdminAuth,
+    requireRole(['super_admin', 'manager']),
+    async (req: AdminRequest, res) => {
+      try {
+        const removed = await mutateDb((db) => {
+          const idx = db.products.findIndex((p) => p.id === req.params.id);
+          if (idx === -1) return false;
+          db.products.splice(idx, 1);
+          return true;
+        });
+
+        if (!removed) {
+          return res.status(404).json({ error: 'រកមិនឃើញផលិតផលទេ' });
+        }
+        res.json({ ok: true });
+      } catch (error) {
+        console.error('Delete product failed:', error);
+        res.status(500).json({ error: 'មិនអាចលុបផលិតផលបានទេ' });
+      }
+    }
+  );
+
+  // ---------------- ADMIN ORDERS, CUSTOMERS & PAYMENTS ----------------
+
+  app.get('/api/admin/orders', requireAdminAuth, async (req, res) => {
+    try {
+      const db = await readDb();
+      let orders = [...db.orders].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+
+      const status = String(req.query.status || '').trim();
+      const search = String(req.query.search || '').trim().toLowerCase();
+
+      if (status && status !== 'all') {
+        orders = orders.filter((o) => o.orderStatus === status);
+      }
+      if (search) {
+        orders = orders.filter(
+          (o) =>
+            o.orderNumber.toLowerCase().includes(search) ||
+            o.customerName.toLowerCase().includes(search) ||
+            o.customerPhone.toLowerCase().includes(search)
+        );
+      }
+
+      res.json({ orders });
+    } catch (error) {
+      console.error('Fetch admin orders failed:', error);
+      res.status(500).json({ error: 'មិនអាចទាញយកការបញ្ជាទិញបានទេ' });
+    }
+  });
+
+  app.patch('/api/admin/orders/:id/status', requireAdminAuth, async (req: AdminRequest, res) => {
+    try {
+      const nextStatus = req.body?.orderStatus as OrderStatus;
+      const validStatuses: OrderStatus[] = [
+        'pending',
+        'paid',
+        'processing',
+        'shipping',
+        'completed',
+        'cancelled',
+        'failed',
+      ];
+      if (!validStatuses.includes(nextStatus)) {
+        return res.status(400).json({ error: 'ស្ថានភាពការបញ្ជាទិញមិនត្រឹមត្រូវទេ' });
+      }
+
+      const db = await readDb();
+      const existingOrder = db.orders.find((o) => o.id === req.params.id);
+      if (!existingOrder) {
+        return res.status(404).json({ error: 'រកមិនឃើញការបញ្ជាទិញទេ' });
+      }
+
+      if (nextStatus === 'paid' && existingOrder.paymentStatus !== 'paid') {
+        if (!['super_admin', 'manager'].includes(req.admin!.role)) {
+          return res.status(403).json({ error: 'មានតែ Manager ឬ Super Admin ប៉ុណ្ណោះដែលអាចបញ្ជាក់ការទូទាត់បាន' });
+        }
+        const paidOrder = await finalizePaidOrder(
+          existingOrder.id,
+          `ADMIN-${req.admin!.username}`,
+          `Verified manually by ${req.admin!.username}`
+        );
+        return res.json({ order: paidOrder });
+      }
+
+      const updatedOrder = await mutateDb((state) => {
+        const target = state.orders.find((o) => o.id === req.params.id);
+        if (!target) return null;
+        target.orderStatus = nextStatus;
+        if (nextStatus === 'failed') target.paymentStatus = 'failed';
+        target.updatedAt = new Date().toISOString();
+        return { ...target };
+      });
+
+      if (updatedOrder) {
+        if (nextStatus === 'cancelled') {
+          await sendOrderTelegramNotification(updatedOrder, 'order_cancelled');
+        } else if (nextStatus === 'failed') {
+          await sendOrderTelegramNotification(updatedOrder, 'order_failed');
+        }
+      }
+
+      res.json({ order: updatedOrder });
+    } catch (error) {
+      console.error('Update order status failed:', error);
+      res.status(500).json({ error: 'មិនអាចកែប្រែស្ថានភាពការបញ្ជាទិញបានទេ' });
+    }
+  });
+
+  app.get('/api/admin/customers', requireAdminAuth, async (_req, res) => {
+    try {
+      const db = await readDb();
+      const customers = [...db.customers].sort((a, b) =>
+        b.lastOrderAt.localeCompare(a.lastOrderAt)
+      );
+      res.json({ customers });
+    } catch (error) {
+      console.error('Fetch customers failed:', error);
+      res.status(500).json({ error: 'មិនអាចទាញយកទិន្នន័យអតិថិជនបានទេ' });
+    }
+  });
+
+  app.get('/api/admin/payments', requireAdminAuth, async (_req, res) => {
+    try {
+      const db = await readDb();
+      const payments = [...db.payments].sort((a, b) =>
+        b.createdAt.localeCompare(a.createdAt)
+      );
+      res.json({ payments });
+    } catch (error) {
+      console.error('Fetch payments failed:', error);
+      res.status(500).json({ error: 'មិនអាចទាញយកប្រវត្តិទូទាត់បានទេ' });
+    }
+  });
+
+  // ---------------- ADMIN USERS & RBAC ----------------
+
+  app.get(
+    '/api/admin/users',
+    requireAdminAuth,
+    requireRole(['super_admin']),
+    async (_req, res) => {
+      try {
+        const db = await readDb();
+        const users = db.admin_accounts.map((a) => ({
+          id: a.id,
+          username: a.username,
+          email: a.email,
+          displayName: a.displayName,
+          role: a.role,
+          active: a.active,
+          createdAt: a.createdAt,
+          lastLoginAt: a.lastLoginAt,
+        }));
+        res.json({ users });
+      } catch (error) {
+        console.error('Fetch admin users failed:', error);
+        res.status(500).json({ error: 'មិនអាចទាញយកបញ្ជីអ្នកគ្រប់គ្រងបានទេ' });
+      }
+    }
+  );
+
+  app.post(
+    '/api/admin/users',
+    requireAdminAuth,
+    requireRole(['super_admin']),
+    async (req, res) => {
+      try {
+        const username = String(req.body?.username || '').trim();
+        const displayName = String(req.body?.displayName || username).trim();
+        const email = String(req.body?.email || '').trim().toLowerCase();
+        const password = String(req.body?.password || '');
+        const role = req.body?.role as AdminRole;
+
+        if (!/^[a-zA-Z0-9_.-]{3,40}$/.test(username)) {
+          return res.status(400).json({ error: 'Username ត្រូវមាន ៣-៤០ តួអក្សរ (អក្សរឡាតាំង លេខ ឬ _)' });
+        }
+        if (password.length < 8) {
+          return res.status(400).json({ error: 'Password ត្រូវមានយ៉ាងតិច ៨ តួអក្សរ' });
+        }
+        if (!['super_admin', 'manager', 'staff'].includes(role)) {
+          return res.status(400).json({ error: 'Role មិនត្រឹមត្រូវ' });
+        }
+
+        const db = await readDb();
+        if (db.admin_accounts.some((a) => a.username === username)) {
+          return res.status(409).json({ error: 'Username នេះមានរួចហើយ' });
+        }
+
+        const passwordHash = await bcrypt.hash(password, 12);
+        const now = new Date().toISOString();
+        const created = await mutateDb((state) => {
+          const acc = {
+            id: newId('adm'),
+            username,
+            displayName,
+            email,
+            passwordHash,
+            role,
+            active: true,
+            createdAt: now,
+          };
+          state.admin_accounts.push(acc);
+          return {
+            id: acc.id,
+            username: acc.username,
+            displayName: acc.displayName,
+            email: acc.email,
+            role: acc.role,
+            active: acc.active,
+            createdAt: acc.createdAt,
+          };
+        });
+
+        res.status(201).json({ user: created });
+      } catch (error) {
+        console.error('Create admin user failed:', error);
+        res.status(500).json({ error: 'មិនអាចបង្កើតគណនី Admin បានទេ' });
+      }
+    }
+  );
+
+  app.patch(
+    '/api/admin/users/:id',
+    requireAdminAuth,
+    requireRole(['super_admin']),
+    async (req: AdminRequest, res) => {
+      try {
+        if (req.params.id === req.admin?.id && req.body?.active === false) {
+          return res.status(400).json({ error: 'មិនអាចបិទគណនីដែលកំពុងប្រើប្រាស់ផ្ទាល់បានទេ' });
+        }
+
+        const updated = await mutateDb((state) => {
+          const target = state.admin_accounts.find((a) => a.id === req.params.id);
+          if (!target) return false;
+          if (req.body?.role && ['super_admin', 'manager', 'staff'].includes(req.body.role)) {
+            target.role = req.body.role;
+          }
+          if (typeof req.body?.active === 'boolean') {
+            target.active = req.body.active;
+          }
+          return true;
+        });
+
+        if (!updated) {
+          return res.status(404).json({ error: 'រកមិនឃើញគណនីទេ' });
+        }
+        res.json({ ok: true });
+      } catch (error) {
+        console.error('Update admin user failed:', error);
+        res.status(500).json({ error: 'មិនអាចកែប្រែសិទ្ធិអ្នកប្រើប្រាស់បានទេ' });
+      }
+    }
+  );
+
+  // ---------------- BACKUPS & TELEGRAM TEST ----------------
+
+  app.get('/api/admin/backups', requireAdminAuth, async (_req, res) => {
+    try {
+      const db = await readDb();
+      res.json({ backups: db.backups.slice(0, 20) });
+    } catch (error) {
+      console.error('Fetch backups failed:', error);
+      res.status(500).json({ error: 'មិនអាចទាញយកបញ្ជី Backup បានទេ' });
+    }
+  });
+
+  app.post(
+    '/api/admin/backups',
+    requireAdminAuth,
+    requireRole(['super_admin', 'manager']),
+    async (req: AdminRequest, res) => {
+      const snapshot = await runPeriodicBackupIfNeeded('manual', req.admin?.username || 'admin');
+      if (!snapshot) {
+        return res.status(500).json({ error: 'ការបង្កើត Backup បរាជ័យ' });
+      }
+      res.status(201).json({ backup: snapshot });
+    }
+  );
+
+  app.get(
+    '/api/admin/backups/export',
+    requireAdminAuth,
+    requireRole(['super_admin', 'manager']),
+    async (_req, res) => {
+      try {
+        const db = await readDb();
+        const payload = {
+          exportedAt: new Date().toISOString(),
+          shop: 'Oudom Shop',
+          products: db.products,
+          orders: db.orders,
+          customers: db.customers,
+          payments: db.payments,
+        };
+
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader(
+          'Content-Disposition',
+          `attachment; filename="oudom-shop-backup-${new Date().toISOString().slice(0, 10)}.json"`
+        );
+        res.send(JSON.stringify(payload, null, 2));
+      } catch (error) {
+        console.error('Export backup failed:', error);
+        res.status(500).json({ error: 'មិនអាចទាញយកឯកសារ Backup បានទេ' });
+      }
+    }
+  );
+
+  app.post(
+    '/api/admin/telegram/test',
+    requireAdminAuth,
+    requireRole(['super_admin']),
+    async (req: AdminRequest, res) => {
+      const result = await sendRawTelegramMessage(
+        `🔔 <b>ឧត្តម Shop — សារសាកល្បង Telegram Bot</b>\nការតភ្ជាប់ Telegram Notification ដំណើរការល្អប្រសើរ (ដោយ ${req.admin?.username})។`
+      );
+      if (!result.ok) {
+        return res.status(400).json({ error: result.error });
+      }
+      res.json({ ok: true });
+    }
+  );
+
+  // ---------------- VITE / STATIC SPA SERVING ----------------
+  if (process.env.NODE_ENV !== 'production') {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distDir = path.join(__dirname, 'dist');
+    app.use(express.static(distDir));
+    app.get('*', (_req, res) => {
+      res.sendFile(path.join(distDir, 'index.html'));
+    });
+  }
+
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Oudom Shop server listening on http://0.0.0.0:${PORT}`);
+  });
+}
+
+void startServer();
