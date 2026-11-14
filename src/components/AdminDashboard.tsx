@@ -1,13 +1,18 @@
-import { useCallback, useEffect, useState, type ChangeEvent, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import { onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth';
 import {
   BarChart3,
+  Bell,
+  BellRing,
   Check,
+  CheckCheck,
+  ChevronRight,
   CreditCard,
   Database,
   Download,
   Edit3,
   FolderPlus,
+  History,
   LayoutDashboard,
   Loader2,
   LogOut,
@@ -17,6 +22,7 @@ import {
   Printer,
   QrCode,
   RefreshCw,
+  Search,
   Send,
   Settings,
   Shield,
@@ -26,6 +32,8 @@ import {
   Trash2,
   Upload,
   Users,
+  Volume2,
+  VolumeX,
   X,
 } from 'lucide-react';
 import {
@@ -63,6 +71,8 @@ import {
 } from '../utils/format.ts';
 import { SafeImage } from './SafeImage.tsx';
 import { AdminProductFormModal } from './AdminProductFormModal.tsx';
+import { OrderProgressTimeline } from './OrderProgressTimeline.tsx';
+import { playOrderAlertChime } from '../utils/orderHistory.ts';
 import {
   compressImageToBoundedDataUrl,
   createBackupSnapshotInFirestore,
@@ -73,6 +83,7 @@ import {
   deleteProductInFirestore,
   loadAdminDashboardFromFirestore,
   saveSettingsInFirestore,
+  subscribeAdminOrderEventsInFirestore,
   toggleCouponInFirestore,
   toggleProductStockInFirestore,
   updateCategoryInFirestore,
@@ -159,6 +170,34 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
   const [printingOrder, setPrintingOrder] = useState<Order | null>(null);
   const [viewingSlipOrder, setViewingSlipOrder] = useState<Order | null>(null);
 
+  // Order Notification Bell & Live Sync state
+  const [bellOpen, setBellOpen] = useState(false);
+  const [soundEnabled, setSoundEnabled] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('oudom_admin_sound_enabled') !== 'false';
+    } catch {
+      return true;
+    }
+  });
+  const [seenOrderMap, setSeenOrderMap] = useState<Record<string, string>>(() => {
+    try {
+      const raw = localStorage.getItem('oudom_admin_seen_orders_v1');
+      return raw ? (JSON.parse(raw) as Record<string, string>) : {};
+    } catch {
+      return {};
+    }
+  });
+  const [liveOrderAlert, setLiveOrderAlert] = useState<{
+    order: Order;
+    kind: 'new_order' | 'payment_slip';
+  } | null>(null);
+  const baselineReadyRef = useRef(false);
+  const prevOrderFingerprintsRef = useRef<Record<string, string>>({});
+
+  // Customer History & Tracking state
+  const [customerSearch, setCustomerSearch] = useState('');
+  const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
+
   // New Admin User Form (Super Admin only)
   const [newUsername, setNewUsername] = useState('');
   const [newDisplayName, setNewDisplayName] = useState('');
@@ -170,9 +209,11 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
     return authToken ? { Authorization: `Bearer ${authToken}` } : {};
   }, [authToken]);
 
-  const loadAllAdminData = useCallback(async () => {
-    setDataLoading(true);
-    setActionError('');
+  const loadAllAdminData = useCallback(async (opts?: { silent?: boolean }) => {
+    if (!opts?.silent) {
+      setDataLoading(true);
+      setActionError('');
+    }
     try {
       if (cloudMode) {
         const cloud = await loadAdminDashboardFromFirestore();
@@ -248,9 +289,13 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
         }
       }
     } catch {
-      setActionError('មិនអាចទាញយកទិន្នន័យគ្រប់គ្រងបានទេ');
+      if (!opts?.silent) {
+        setActionError('មិនអាចទាញយកទិន្នន័យគ្រប់គ្រងបានទេ');
+      }
     } finally {
-      setDataLoading(false);
+      if (!opts?.silent) {
+        setDataLoading(false);
+      }
     }
   }, [authHeaders, adminUser?.role, cloudMode]);
 
@@ -310,10 +355,145 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
   }, [authHeaders]);
 
   useEffect(() => {
-    if (adminUser) {
-      void loadAllAdminData();
+    if (!adminUser) {
+      baselineReadyRef.current = false;
+      prevOrderFingerprintsRef.current = {};
+      return;
     }
-  }, [adminUser, loadAllAdminData]);
+
+    void loadAllAdminData();
+
+    if (cloudMode) {
+      const unsub = subscribeAdminOrderEventsInFirestore(
+        () => {
+          void loadAllAdminData({ silent: true });
+        },
+        (err) => {
+          console.warn('Live order subscription error:', err);
+        }
+      );
+      return () => unsub();
+    }
+
+    const timer = window.setInterval(() => {
+      void loadAllAdminData({ silent: true });
+    }, 9000);
+    return () => window.clearInterval(timer);
+  }, [adminUser, cloudMode, loadAllAdminData]);
+
+  // Detect new orders / payment slip uploads & update Notification Bell
+  useEffect(() => {
+    if (!adminUser || orders.length === 0) return;
+
+    const getFingerprint = (o: Order) =>
+      o.paymentSubmittedAt ? `slip:${o.paymentSubmittedAt}` : `order:${o.createdAt}`;
+
+    const currentMap: Record<string, string> = {};
+    for (const o of orders) {
+      currentMap[o.id] = getFingerprint(o);
+    }
+
+    if (!baselineReadyRef.current) {
+      baselineReadyRef.current = true;
+      prevOrderFingerprintsRef.current = currentMap;
+
+      // On first visit with empty seen storage, auto-mark old finalized orders as seen
+      // while leaving pending orders visible in the bell dropdown
+      let hasSavedSeen = false;
+      try {
+        hasSavedSeen = Boolean(localStorage.getItem('oudom_admin_seen_orders_v1'));
+      } catch {
+        hasSavedSeen = false;
+      }
+      if (!hasSavedSeen) {
+        const initialSeen: Record<string, string> = {};
+        for (const o of orders) {
+          if (o.orderStatus !== 'pending') {
+            initialSeen[o.id] = getFingerprint(o);
+          }
+        }
+        setSeenOrderMap(initialSeen);
+        try {
+          localStorage.setItem('oudom_admin_seen_orders_v1', JSON.stringify(initialSeen));
+        } catch {
+          // Ignore storage quota
+        }
+      }
+      return;
+    }
+
+    const prevMap = prevOrderFingerprintsRef.current;
+    let detectedAlert: { order: Order; kind: 'new_order' | 'payment_slip' } | null = null;
+
+    for (const o of orders) {
+      const fp = currentMap[o.id];
+      const prevFp = prevMap[o.id];
+      if (!prevFp) {
+        detectedAlert = { order: o, kind: 'new_order' };
+        break;
+      }
+      if (prevFp !== fp && fp.startsWith('slip:')) {
+        detectedAlert = { order: o, kind: 'payment_slip' };
+        break;
+      }
+    }
+
+    prevOrderFingerprintsRef.current = currentMap;
+
+    if (detectedAlert) {
+      setLiveOrderAlert(detectedAlert);
+      if (soundEnabled) {
+        playOrderAlertChime();
+      }
+    }
+  }, [adminUser, orders, soundEnabled]);
+
+  const persistSeenOrders = useCallback((next: Record<string, string>) => {
+    setSeenOrderMap(next);
+    try {
+      localStorage.setItem('oudom_admin_seen_orders_v1', JSON.stringify(next));
+    } catch {
+      // Ignore storage error
+    }
+  }, []);
+
+  const unreadNotifications = useMemo(() => {
+    return orders.filter((o) => {
+      const fp = o.paymentSubmittedAt ? `slip:${o.paymentSubmittedAt}` : `order:${o.createdAt}`;
+      return seenOrderMap[o.id] !== fp;
+    });
+  }, [orders, seenOrderMap]);
+
+  const recentNotificationOrders = useMemo(() => {
+    return orders.slice(0, 12);
+  }, [orders]);
+
+  const markOrderNotificationRead = useCallback(
+    (o: Order) => {
+      const fp = o.paymentSubmittedAt ? `slip:${o.paymentSubmittedAt}` : `order:${o.createdAt}`;
+      persistSeenOrders({ ...seenOrderMap, [o.id]: fp });
+    },
+    [persistSeenOrders, seenOrderMap]
+  );
+
+  const markAllNotificationsRead = useCallback(() => {
+    const next: Record<string, string> = { ...seenOrderMap };
+    for (const o of orders) {
+      next[o.id] = o.paymentSubmittedAt ? `slip:${o.paymentSubmittedAt}` : `order:${o.createdAt}`;
+    }
+    persistSeenOrders(next);
+  }, [orders, persistSeenOrders, seenOrderMap]);
+
+  const handleToggleSound = () => {
+    const next = !soundEnabled;
+    setSoundEnabled(next);
+    try {
+      localStorage.setItem('oudom_admin_sound_enabled', String(next));
+    } catch {
+      // Ignore storage error
+    }
+    if (next) playOrderAlertChime();
+  };
 
   const handlePasswordLogin = async (e: FormEvent) => {
     e.preventDefault();
@@ -551,7 +731,7 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
     setActionError('');
     setActionMsg('');
     if (cloudMode) {
-      setActionError('នៅលើ Firebase Cloud Mode ការគ្រប់គ្រងគណនី Google ត្រូវបានការពារដោយ Super Admin (krenoudom7@gmail.com)។');
+      setActionError('នៅលើ Firebase Cloud Mode ការគ្រប់គ្រងគណនី Google ត្រូវបានការពារដោយ Super Admin ផ្ទាល់។');
       return;
     }
     const res = await fetch(apiUrl('/api/admin/users'), {
@@ -984,7 +1164,7 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
                   ប្រព័ន្ធ Online · Firebase Cloud Database
                 </p>
                 <p className="mt-1 text-white/80">
-                  ចូលដោយប្រើគណនី Google ម្ចាស់ហាង (<span className="font-mono-num">krenoudom7@gmail.com</span>) ដើម្បីគ្រប់គ្រងទំនិញ ការបញ្ជាទិញ និងរូបភាព KHQR ផ្ទាល់តាម Online។
+                  ចូលដោយប្រើគណនី Google របស់ម្ចាស់ហាង ដើម្បីគ្រប់គ្រងទំនិញ ការបញ្ជាទិញ និងរូបភាព KHQR ផ្ទាល់តាម Online។
                 </p>
               </div>
 
@@ -1248,6 +1428,150 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
+            {/* Order Notification Bell */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setBellOpen((prev) => !prev)}
+                aria-label="កណ្តឹងជូនដំណឹងការបញ្ជាទិញ"
+                className={`relative flex h-10 w-10 items-center justify-center rounded-lg border transition ${
+                  unreadNotifications.length > 0
+                    ? 'border-[#C9A227] bg-[#C9A227]/10 text-[#111111]'
+                    : 'border-[#E2DDD3] bg-[#FAF9F6] text-[#111111] hover:border-[#111111]'
+                }`}
+              >
+                {unreadNotifications.length > 0 ? (
+                  <BellRing className="h-4 w-4 text-[#B8860B]" />
+                ) : (
+                  <Bell className="h-4 w-4 text-[#4A463E]" />
+                )}
+                {unreadNotifications.length > 0 && (
+                  <span className="absolute -top-1.5 -right-1.5 flex h-5 min-w-[20px] items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-bold font-mono-num text-white shadow">
+                    {unreadNotifications.length > 99 ? '99+' : unreadNotifications.length}
+                  </span>
+                )}
+              </button>
+
+              {bellOpen && (
+                <>
+                  <div
+                    className="fixed inset-0 z-40"
+                    onClick={() => setBellOpen(false)}
+                    aria-hidden="true"
+                  />
+                  <div className="fixed sm:absolute right-3 sm:right-0 top-14 sm:top-12 z-50 w-[calc(100vw-24px)] sm:w-96 rounded-2xl border border-[#E5E0D5] bg-white shadow-2xl overflow-hidden">
+                    <div className="flex items-center justify-between border-b border-[#ECE8DF] bg-[#FAF9F6] px-4 py-3">
+                      <div className="flex items-center gap-2">
+                        <BellRing className="h-4 w-4 text-[#B8860B]" />
+                        <span className="text-xs font-bold text-[#111111]">
+                          កណ្តឹងជូនដំណឹងការបញ្ជាទិញ ({unreadNotifications.length} ថ្មី)
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={handleToggleSound}
+                          title={soundEnabled ? 'បិទសំឡេងរោទិ៍' : 'បើកសំឡេងរោទិ៍'}
+                          className="flex h-7 items-center gap-1 rounded-md border border-[#E2DDD3] bg-white px-2 text-[11px] font-medium text-[#4A463E] hover:border-[#111111]"
+                        >
+                          {soundEnabled ? (
+                            <Volume2 className="h-3.5 w-3.5 text-emerald-700" />
+                          ) : (
+                            <VolumeX className="h-3.5 w-3.5 text-[#8A8478]" />
+                          )}
+                          <span>{soundEnabled ? 'សំឡេង' : 'ស្ងាត់'}</span>
+                        </button>
+                        {unreadNotifications.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={markAllNotificationsRead}
+                            className="flex h-7 items-center gap-1 rounded-md bg-[#111111] px-2 text-[11px] font-medium text-white hover:bg-[#262626]"
+                          >
+                            <CheckCheck className="h-3 w-3 text-[#C9A227]" />
+                            <span>អានទាំងអស់</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="max-h-80 overflow-y-auto divide-y divide-[#F2EFE9]">
+                      {recentNotificationOrders.length === 0 ? (
+                        <p className="py-8 text-center text-xs text-[#6B6559]">
+                          មិនទាន់មានការបញ្ជាទិញចូលមកទេ
+                        </p>
+                      ) : (
+                        recentNotificationOrders.map((o) => {
+                          const fp = o.paymentSubmittedAt
+                            ? `slip:${o.paymentSubmittedAt}`
+                            : `order:${o.createdAt}`;
+                          const isUnread = seenOrderMap[o.id] !== fp;
+                          const badge =
+                            ORDER_STATUS_LABELS[o.orderStatus] || ORDER_STATUS_LABELS.pending;
+
+                          return (
+                            <button
+                              key={o.id}
+                              type="button"
+                              onClick={() => {
+                                markOrderNotificationRead(o);
+                                setOrderStatusFilter('all');
+                                setOrderSearch(o.orderNumber);
+                                setActiveTab('orders');
+                                setBellOpen(false);
+                              }}
+                              className={`flex w-full items-start justify-between gap-2.5 px-4 py-3 text-left transition hover:bg-[#FAF9F6] ${
+                                isUnread ? 'bg-[#C9A227]/8' : 'bg-white'
+                              }`}
+                            >
+                              <div className="min-w-0 flex-1 space-y-0.5">
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  {isUnread && (
+                                    <span className="h-2 w-2 rounded-full bg-red-600 shrink-0" />
+                                  )}
+                                  <span className="text-xs font-bold text-[#111111] truncate">
+                                    {o.customerName}
+                                  </span>
+                                  <span className="font-mono-num text-[11px] text-[#6B6559]">
+                                    ({o.customerPhone})
+                                  </span>
+                                </div>
+                                <p className="text-[11px] text-[#4A463E]">
+                                  {o.paymentSubmittedAt
+                                    ? 'បានផ្ញើវិក្កយបត្រផ្ទេរប្រាក់ · '
+                                    : 'បានបញ្ជាទិញទំនិញថ្មី · '}
+                                  <span className="font-mono-num font-semibold text-[#111111]">
+                                    {o.orderNumber}
+                                  </span>
+                                </p>
+                                <div className="flex items-center gap-2 pt-0.5">
+                                  <span
+                                    className={`rounded border px-1.5 py-0.5 text-[10px] font-medium ${badge.tone}`}
+                                  >
+                                    {badge.km}
+                                  </span>
+                                  <span className="text-[10px] text-[#8A8478]">
+                                    {formatDateTimeKm(o.paymentSubmittedAt || o.createdAt)}
+                                  </span>
+                                </div>
+                              </div>
+                              <div className="text-right shrink-0">
+                                <p className="font-mono-num text-xs font-bold text-[#111111]">
+                                  ${o.totalUsd.toFixed(2)}
+                                </p>
+                                <p className="text-[10px] text-[#B8860B] font-medium mt-0.5">
+                                  មើលលម្អិត →
+                                </p>
+                              </div>
+                            </button>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+
             <button
               type="button"
               onClick={() => void loadAllAdminData()}
@@ -1268,13 +1592,60 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
                 className="flex h-10 items-center gap-1.5 rounded-lg bg-[#111111] px-3.5 text-xs font-semibold text-white hover:bg-[#262626] whitespace-nowrap"
               >
                 <Plus className="h-4 w-4 text-[#C9A227]" />
-                <span>បន្ថែមទំនិញ</span>
+                <span className="hidden sm:inline">បន្ថែមទំនិញ</span>
+                <span className="sm:hidden">បន្ថែម</span>
               </button>
             )}
           </div>
         </header>
 
         <main className="flex-1 p-4 sm:p-6 space-y-5 max-w-7xl w-full mx-auto">
+          {liveOrderAlert && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#C9A227] bg-[#111111] px-4 py-3 text-white shadow-lg">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#C9A227] text-[#111111]">
+                  <BellRing className="h-4 w-4" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-xs font-bold text-[#C9A227]">
+                    {liveOrderAlert.kind === 'payment_slip'
+                      ? 'អតិថិជនទើបផ្ញើវិក្កយបត្រទូទាត់ប្រាក់ថ្មី!'
+                      : 'មានការបញ្ជាទិញថ្មីចូលមកហាង!'}
+                  </p>
+                  <p className="text-xs text-white/90 truncate">
+                    {liveOrderAlert.order.customerName} ({liveOrderAlert.order.customerPhone}) ·{' '}
+                    <span className="font-mono-num font-semibold">
+                      {liveOrderAlert.order.orderNumber}
+                    </span>{' '}
+                    · <b className="font-mono-num">${liveOrderAlert.order.totalUsd.toFixed(2)}</b>
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    markOrderNotificationRead(liveOrderAlert.order);
+                    setOrderStatusFilter('all');
+                    setOrderSearch(liveOrderAlert.order.orderNumber);
+                    setActiveTab('orders');
+                    setLiveOrderAlert(null);
+                  }}
+                  className="h-9 rounded-lg bg-[#C9A227] px-3 text-xs font-bold text-[#111111] hover:bg-[#D4B038]"
+                >
+                  ពិនិត្យ Order ឥឡូវ
+                </button>
+                <button
+                  type="button"
+                  aria-label="បិទ"
+                  onClick={() => setLiveOrderAlert(null)}
+                  className="flex h-8 w-8 items-center justify-center rounded-lg text-white/70 hover:bg-white/10"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          )}
           {actionMsg && (
             <div className="flex items-center justify-between rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs font-medium text-emerald-900">
               <span>{actionMsg}</span>
@@ -1913,83 +2284,283 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
             </div>
           )}
 
-          {/* TAB 4: CUSTOMERS & PAYMENT HISTORY */}
-          {activeTab === 'customers' && (
-            <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
-              <div className="rounded-2xl border border-[#E5E0D5] bg-white p-5">
-                <h2 className="text-sm font-semibold text-[#111111] mb-4">
-                  បញ្ជីអតិថិជន ({customers.length})
-                </h2>
-                {customers.length === 0 ? (
-                  <p className="text-xs text-[#6B6559] py-6 text-center">មិនទាន់មានទិន្នន័យអតិថិជន</p>
-                ) : (
-                  <div className="divide-y divide-[#F2EFE9]">
-                    {customers.map((c) => (
-                      <div key={c.id} className="py-3 flex items-center justify-between gap-3">
-                        <div className="min-w-0">
-                          <p className="text-sm font-semibold text-[#111111] truncate">{c.name}</p>
-                          <p className="text-xs font-mono-num text-[#6B6559]">{c.phone}</p>
-                          <p className="text-xs text-[#8A8478] truncate">{c.address}</p>
-                        </div>
-                        <div className="text-right shrink-0">
-                          <p className="text-xs font-bold font-mono-num text-[#111111]">
-                            ${c.totalSpentUsd.toFixed(2)}
-                          </p>
-                          <p className="text-[11px] text-[#6B6559]">
-                            {c.totalOrders} ការបញ្ជាទិញ
-                          </p>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
+          {/* TAB 4: CUSTOMERS HISTORY, TRACKING & PAYMENT LOGS */}
+          {activeTab === 'customers' && (() => {
+            const q = customerSearch.trim().toLowerCase();
+            const filteredCustomers = customers.filter((c) => {
+              if (!q) return true;
+              return (
+                c.name.toLowerCase().includes(q) ||
+                c.phone.toLowerCase().includes(q) ||
+                c.address.toLowerCase().includes(q)
+              );
+            });
+            const activeCustomer =
+              filteredCustomers.find((c) => c.id === selectedCustomerId) ||
+              filteredCustomers[0] ||
+              null;
 
-              <div className="rounded-2xl border border-[#E5E0D5] bg-white p-5">
-                <div className="flex items-center gap-2 mb-4">
-                  <CreditCard className="h-4 w-4 text-[#B8860B]" />
-                  <h2 className="text-sm font-semibold text-[#111111]">
-                    ប្រវត្តិការទូទាត់ ABA PayWay ({payments.length})
-                  </h2>
-                </div>
-                {payments.length === 0 ? (
-                  <p className="text-xs text-[#6B6559] py-6 text-center">មិនទាន់មានប្រវត្តិទូទាត់</p>
-                ) : (
-                  <div className="divide-y divide-[#F2EFE9]">
-                    {payments.map((pay) => (
-                      <div key={pay.id} className="py-3 space-y-1 text-xs">
-                        <div className="flex items-center justify-between">
-                          <span className="font-mono-num font-semibold text-[#111111]">
-                            {pay.orderNumber}
-                          </span>
-                          <span
-                            className={`font-semibold uppercase ${
-                              pay.status === 'paid'
-                                ? 'text-emerald-700'
-                                : pay.status === 'failed'
-                                ? 'text-red-700'
-                                : 'text-amber-700'
-                            }`}
-                          >
-                            {pay.status}
-                          </span>
-                        </div>
-                        <div className="flex justify-between text-[#6B6559]">
-                          <span className="font-mono-num">TranID: {pay.tranId}</span>
-                          <span className="font-mono-num font-semibold text-[#111111]">
-                            ${pay.amountUsd.toFixed(2)}
-                          </span>
-                        </div>
-                        {pay.statusDetail && (
-                          <p className="text-[11px] text-[#8A8478]">{pay.statusDetail}</p>
-                        )}
+            const customerPhoneDigits = activeCustomer
+              ? activeCustomer.phone.replace(/\D/g, '')
+              : '';
+            const activeCustomerOrders = activeCustomer
+              ? orders.filter((o) => {
+                  const oDigits = o.customerPhone.replace(/\D/g, '');
+                  if (customerPhoneDigits && oDigits) {
+                    return oDigits === customerPhoneDigits;
+                  }
+                  return o.customerId === activeCustomer.id || o.customerName === activeCustomer.name;
+                })
+              : [];
+
+            return (
+              <div className="space-y-5">
+                <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
+                  {/* Customer Directory List */}
+                  <div className="lg:col-span-5 rounded-2xl border border-[#E5E0D5] bg-white p-5 space-y-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <Users className="h-4 w-4 text-[#B8860B]" />
+                        <h2 className="text-sm font-semibold text-[#111111]">
+                          បញ្ជីអតិថិជន ({filteredCustomers.length})
+                        </h2>
                       </div>
-                    ))}
+                    </div>
+
+                    <div className="relative">
+                      <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#8A8478]" />
+                      <input
+                        type="search"
+                        value={customerSearch}
+                        onChange={(e) => setCustomerSearch(e.target.value)}
+                        placeholder="ស្វែងរកឈ្មោះ ឬលេខទូរស័ព្ទអតិថិជន..."
+                        className="h-10 w-full rounded-xl border border-[#E2DDD3] bg-[#FAF9F6] pl-9 pr-3 text-xs focus:border-[#111111] focus:bg-white focus:outline-none"
+                      />
+                    </div>
+
+                    {filteredCustomers.length === 0 ? (
+                      <p className="text-xs text-[#6B6559] py-8 text-center">
+                        មិនទាន់មានទិន្នន័យអតិថិជន
+                      </p>
+                    ) : (
+                      <div className="space-y-2 max-h-[540px] overflow-y-auto pr-0.5">
+                        {filteredCustomers.map((c) => {
+                          const isSelected = activeCustomer?.id === c.id;
+                          return (
+                            <button
+                              key={c.id}
+                              type="button"
+                              onClick={() => setSelectedCustomerId(c.id)}
+                              className={`flex w-full items-center justify-between gap-3 rounded-xl border p-3 text-left transition ${
+                                isSelected
+                                  ? 'border-[#111111] bg-[#FAF9F6] ring-1 ring-[#111111]'
+                                  : 'border-[#ECE8DF] bg-white hover:border-[#111111]'
+                              }`}
+                            >
+                              <div className="min-w-0 space-y-0.5">
+                                <p className="text-sm font-semibold text-[#111111] truncate">
+                                  {c.name}
+                                </p>
+                                <p className="text-xs font-mono-num text-[#6B6559]">{c.phone}</p>
+                                <p className="text-[11px] text-[#8A8478] truncate">{c.address}</p>
+                              </div>
+                              <div className="flex items-center gap-2 shrink-0">
+                                <div className="text-right">
+                                  <p className="text-xs font-bold font-mono-num text-[#111111]">
+                                    ${c.totalSpentUsd.toFixed(2)}
+                                  </p>
+                                  <p className="text-[11px] text-[#6B6559]">
+                                    {c.totalOrders} ការបញ្ជាទិញ
+                                  </p>
+                                </div>
+                                <ChevronRight className="h-4 w-4 text-[#8A8478]" />
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
-                )}
+
+                  {/* Selected Customer Order History & Delivery Stage Tracking */}
+                  <div className="lg:col-span-7 rounded-2xl border border-[#E5E0D5] bg-white p-5 space-y-4">
+                    <div className="flex items-center gap-2">
+                      <History className="h-4 w-4 text-[#B8860B]" />
+                      <h2 className="text-sm font-semibold text-[#111111]">
+                        ប្រវត្តិទិញ និងតាមដានដំណាក់កាលទំនិញរបស់អ្នកទិញ
+                      </h2>
+                    </div>
+
+                    {!activeCustomer ? (
+                      <p className="text-xs text-[#6B6559] py-12 text-center">
+                        សូមជ្រើសរើសអតិថិជនពីបញ្ជីខាងឆ្វេងដើម្បីមើលប្រវត្តិ និងស្ថានភាពទំនិញ
+                      </p>
+                    ) : (
+                      <>
+                        {/* Customer Summary Header */}
+                        <div className="rounded-xl border border-[#ECE8DF] bg-[#FAF9F6] p-4 flex flex-wrap items-center justify-between gap-3">
+                          <div className="min-w-0 space-y-0.5">
+                            <p className="text-sm font-bold text-[#111111]">
+                              {activeCustomer.name}
+                            </p>
+                            <p className="text-xs font-mono-num text-[#4A463E]">
+                              {activeCustomer.phone} · {activeCustomer.address}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-4 text-right">
+                            <div>
+                              <p className="text-[11px] text-[#6B6559]">ចំនួនបញ្ជាទិញ</p>
+                              <p className="font-mono-num text-sm font-bold text-[#111111]">
+                                {activeCustomerOrders.length} ដង
+                              </p>
+                            </div>
+                            <div>
+                              <p className="text-[11px] text-[#6B6559]">សរុបបានទូទាត់</p>
+                              <p className="font-mono-num text-sm font-bold text-[#9A6F04]">
+                                ${activeCustomer.totalSpentUsd.toFixed(2)}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Customer Orders Timeline List */}
+                        {activeCustomerOrders.length === 0 ? (
+                          <p className="text-xs text-[#6B6559] py-8 text-center">
+                            មិនមានការបញ្ជាទិញសម្រាប់អតិថិជននេះទេ
+                          </p>
+                        ) : (
+                          <div className="space-y-4 max-h-[540px] overflow-y-auto pr-0.5">
+                            {activeCustomerOrders.map((ord) => {
+                              const badge =
+                                ORDER_STATUS_LABELS[ord.orderStatus] || ORDER_STATUS_LABELS.pending;
+                              return (
+                                <div
+                                  key={ord.id}
+                                  className="rounded-xl border border-[#E5E0D5] bg-[#FAF9F6]/60 p-4 space-y-3"
+                                >
+                                  <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <div>
+                                      <div className="flex items-center gap-2 flex-wrap">
+                                        <span className="font-mono-num text-xs font-bold text-[#111111]">
+                                          {ord.orderNumber}
+                                        </span>
+                                        <span
+                                          className={`rounded border px-2 py-0.5 text-[11px] font-medium ${badge.tone}`}
+                                        >
+                                          {badge.km}
+                                        </span>
+                                        <span className="font-mono-num text-xs font-bold text-[#9A6F04]">
+                                          ${ord.totalUsd.toFixed(2)}
+                                        </span>
+                                      </div>
+                                      <p className="text-[11px] text-[#6B6559] mt-0.5">
+                                        {formatDateTimeKm(ord.createdAt)} ·{' '}
+                                        {getPaymentMethodLabel(ord.paymentMethod)}
+                                      </p>
+                                    </div>
+
+                                    <div className="flex items-center gap-2">
+                                      <select
+                                        value={ord.orderStatus}
+                                        onChange={(e) =>
+                                          void handleUpdateOrderStatus(
+                                            ord.id,
+                                            e.target.value as OrderStatus
+                                          )
+                                        }
+                                        className="h-9 rounded-lg border border-[#E2DDD3] bg-white px-2.5 text-xs font-semibold text-[#111111]"
+                                      >
+                                        {Object.entries(ORDER_STATUS_LABELS).map(([k, v]) => (
+                                          <option key={k} value={k}>
+                                            {v.km} ({v.en})
+                                          </option>
+                                        ))}
+                                      </select>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setOrderStatusFilter('all');
+                                          setOrderSearch(ord.orderNumber);
+                                          setActiveTab('orders');
+                                        }}
+                                        className="h-9 rounded-lg border border-[#E2DDD3] bg-white px-2.5 text-[11px] font-medium text-[#111111] hover:border-[#111111]"
+                                      >
+                                        គ្រប់គ្រងលម្អិត
+                                      </button>
+                                    </div>
+                                  </div>
+
+                                  <div className="rounded-lg border border-[#ECE8DF] bg-white px-3 py-2 text-xs space-y-1">
+                                    {ord.items.map((it, idx) => (
+                                      <div key={idx} className="flex justify-between">
+                                        <span className="truncate pr-2 text-[#4A463E]">
+                                          {it.name} × {it.quantity}
+                                        </span>
+                                        <span className="font-mono-num font-medium text-[#111111] shrink-0">
+                                          ${it.lineTotalUsd.toFixed(2)}
+                                        </span>
+                                      </div>
+                                    ))}
+                                  </div>
+
+                                  <OrderProgressTimeline order={ord} compact />
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                {/* ABA Payment History Log */}
+                <div className="rounded-2xl border border-[#E5E0D5] bg-white p-5">
+                  <div className="flex items-center gap-2 mb-4">
+                    <CreditCard className="h-4 w-4 text-[#B8860B]" />
+                    <h2 className="text-sm font-semibold text-[#111111]">
+                      ប្រវត្តិការទូទាត់ ({payments.length})
+                    </h2>
+                  </div>
+                  {payments.length === 0 ? (
+                    <p className="text-xs text-[#6B6559] py-6 text-center">មិនទាន់មានប្រវត្តិទូទាត់</p>
+                  ) : (
+                    <div className="divide-y divide-[#F2EFE9]">
+                      {payments.map((pay) => (
+                        <div key={pay.id} className="py-3 space-y-1 text-xs">
+                          <div className="flex items-center justify-between">
+                            <span className="font-mono-num font-semibold text-[#111111]">
+                              {pay.orderNumber}
+                            </span>
+                            <span
+                              className={`font-semibold uppercase ${
+                                pay.status === 'paid'
+                                  ? 'text-emerald-700'
+                                  : pay.status === 'failed'
+                                  ? 'text-red-700'
+                                  : 'text-amber-700'
+                              }`}
+                            >
+                              {pay.status}
+                            </span>
+                          </div>
+                          <div className="flex justify-between text-[#6B6559]">
+                            <span className="font-mono-num">TranID: {pay.tranId}</span>
+                            <span className="font-mono-num font-semibold text-[#111111]">
+                              ${pay.amountUsd.toFixed(2)}
+                            </span>
+                          </div>
+                          {pay.statusDetail && (
+                            <p className="text-[11px] text-[#8A8478]">{pay.statusDetail}</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* TAB 5: PROMO COUPONS & STORE SETTINGS */}
           {activeTab === 'coupons' && (

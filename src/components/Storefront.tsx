@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   ArrowRight,
   Heart,
+  History,
   Lock,
   MapPin,
   Menu,
@@ -31,6 +32,10 @@ import { SafeImage } from './SafeImage.tsx';
 import { ProductDetailModal } from './ProductDetailModal.tsx';
 import { CartCheckoutDrawer } from './CartCheckoutDrawer.tsx';
 import { OrderTrackerModal } from './OrderTrackerModal.tsx';
+import {
+  loadCustomerOrderHistory,
+  ORDER_HISTORY_EVENT,
+} from '../utils/orderHistory.ts';
 
 interface StorefrontProps {
   onNavigateAdmin: () => void;
@@ -81,11 +86,24 @@ export function Storefront({ onNavigateAdmin }: StorefrontProps) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [activeProduct, setActiveProduct] = useState<Product | null>(null);
   const [trackerOpen, setTrackerOpen] = useState(false);
+  const [orderHistoryCount, setOrderHistoryCount] = useState<number>(
+    () => loadCustomerOrderHistory().length
+  );
 
   const [cart, setCart] = useState<CartItem[]>([]);
   const [cartOpen, setCartOpen] = useState(false);
   const [checkoutInitialStep, setCheckoutInitialStep] = useState<'cart' | 'checkout'>('cart');
   const [cartToast, setCartToast] = useState('');
+
+  useEffect(() => {
+    const syncCount = () => setOrderHistoryCount(loadCustomerOrderHistory().length);
+    window.addEventListener(ORDER_HISTORY_EVENT, syncCount);
+    window.addEventListener('storage', syncCount);
+    return () => {
+      window.removeEventListener(ORDER_HISTORY_EVENT, syncCount);
+      window.removeEventListener('storage', syncCount);
+    };
+  }, []);
 
   const loadStoreData = async () => {
     setLoading(true);
@@ -386,15 +404,21 @@ export function Storefront({ onNavigateAdmin }: StorefrontProps) {
             })}
           </nav>
 
-          {/* Zone 3: Desktop Order Lookup + Currency toggle + Primary Cart action */}
+          {/* Zone 3: Order History & Tracker + Currency toggle + Primary Cart action */}
           <div className="flex items-center gap-2 shrink-0">
             <button
               type="button"
               onClick={() => setTrackerOpen(true)}
-              className="hidden md:flex h-10 items-center gap-1.5 rounded-lg border border-[#E2DDD3] bg-white px-3 text-xs font-medium text-[#111111] transition hover:border-[#111111] whitespace-nowrap shrink-0"
+              aria-label="ប្រវត្តិទិញ និងតាមដានការបញ្ជាទិញ"
+              className="relative flex h-10 w-10 md:w-auto items-center justify-center gap-1.5 rounded-lg border border-[#E2DDD3] bg-white md:px-3 text-xs font-medium text-[#111111] transition hover:border-[#111111] whitespace-nowrap shrink-0"
             >
-              <PackageSearch className="h-3.5 w-3.5 text-[#B8860B]" />
-              <span>តាមដាន Order</span>
+              <History className="h-4 w-4 md:h-3.5 md:w-3.5 text-[#B8860B] shrink-0" />
+              <span className="hidden md:inline">ប្រវត្តិ & តាមដាន</span>
+              {orderHistoryCount > 0 && (
+                <span className="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-[#111111] px-1 text-[10px] font-bold font-mono-num text-[#C9A227] md:static absolute -top-1.5 -right-1.5">
+                  {orderHistoryCount}
+                </span>
+              )}
             </button>
             <button
               type="button"
@@ -480,10 +504,17 @@ export function Storefront({ onNavigateAdmin }: StorefrontProps) {
                     setMobileMenuOpen(false);
                     setTrackerOpen(true);
                   }}
-                  className="flex h-11 w-full items-center gap-2.5 rounded-xl px-3 text-sm font-medium text-[#111111] hover:bg-[#FAF9F6]"
+                  className="flex h-11 w-full items-center justify-between gap-2.5 rounded-xl px-3 text-sm font-medium text-[#111111] hover:bg-[#FAF9F6]"
                 >
-                  <PackageSearch className="h-4 w-4 text-[#B8860B]" />
-                  <span>តាមដានការបញ្ជាទិញ</span>
+                  <span className="flex items-center gap-2.5">
+                    <PackageSearch className="h-4 w-4 text-[#B8860B]" />
+                    <span>ប្រវត្តិទិញ & តាមដានទំនិញ</span>
+                  </span>
+                  {orderHistoryCount > 0 && (
+                    <span className="rounded-full bg-[#111111] px-2 py-0.5 text-[11px] font-bold font-mono-num text-[#C9A227]">
+                      {orderHistoryCount}
+                    </span>
+                  )}
                 </button>
                 <button
                   type="button"
@@ -886,7 +917,7 @@ export function Storefront({ onNavigateAdmin }: StorefrontProps) {
                   onClick={() => setTrackerOpen(true)}
                   className="h-10 rounded-lg border border-white/20 px-3.5 text-xs font-medium text-white hover:bg-white/10"
                 >
-                  តាមដានការបញ្ជាទិញ
+                  ប្រវត្តិទិញ & តាមដានទំនិញ
                 </button>
                 <button
                   type="button"

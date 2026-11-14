@@ -46,6 +46,8 @@ import {
   validateCouponInFirestore,
 } from '../services/firestoreShop.ts';
 import { SafeImage } from './SafeImage.tsx';
+import { OrderProgressTimeline } from './OrderProgressTimeline.tsx';
+import { saveOrderToCustomerHistory } from '../utils/orderHistory.ts';
 
 export interface AbaBankInfo {
   accountName: string;
@@ -297,6 +299,7 @@ export function CartCheckoutDrawer({
           // Ignore storage quota errors
         }
 
+        saveOrderToCustomerHistory(cloudOrder);
         setCreatedOrder(cloudOrder);
         if (paymentMethod === 'aba_payway' || paymentMethod === 'aba_khqr') {
           setAbaNotice(
@@ -315,6 +318,7 @@ export function CartCheckoutDrawer({
         return;
       }
 
+      saveOrderToCustomerHistory(data.order);
       setCreatedOrder(data.order);
       if (data.abaError) {
         setAbaNotice(data.abaError);
@@ -348,6 +352,7 @@ export function CartCheckoutDrawer({
         return;
       }
       if (data.order) {
+        saveOrderToCustomerHistory(data.order);
         setCreatedOrder(data.order);
       }
       if (data.verification?.message) {
@@ -413,12 +418,14 @@ export function CartCheckoutDrawer({
           reference: transferRef.trim(),
           slipUrl: slipDataUrl || undefined,
         });
-        setCreatedOrder({
+        const updatedCloudOrder: Order = {
           ...createdOrder,
           paymentReference: transferRef.trim() || createdOrder.paymentReference,
           paymentSlipUrl: slipDataUrl || createdOrder.paymentSlipUrl,
           paymentSubmittedAt: new Date().toISOString(),
-        });
+        };
+        saveOrderToCustomerHistory(updatedCloudOrder);
+        setCreatedOrder(updatedCloudOrder);
         setSlipDataUrl('');
         setTransferNoteSent(
           'បានផ្ញើភស្តុតាងបង់ប្រាក់ទៅហាងរួចរាល់! ម្ចាស់ហាងនឹងពិនិត្យ និងបញ្ជាក់ក្នុង Admin Dashboard ភ្លាមៗ។'
@@ -429,7 +436,10 @@ export function CartCheckoutDrawer({
         setTransferNoteSent(data.error || 'មិនអាចផ្ញើភស្តុតាងបង់ប្រាក់បានទេ');
         return;
       }
-      if (data.order) setCreatedOrder(data.order);
+      if (data.order) {
+        saveOrderToCustomerHistory(data.order);
+        setCreatedOrder(data.order);
+      }
       setSlipDataUrl('');
       setTransferNoteSent(
         data.message || 'បានផ្ញើភស្តុតាងបង់ប្រាក់ទៅហាងរួចរាល់!'
@@ -889,6 +899,11 @@ export function CartCheckoutDrawer({
                     <span>វិក្កយបត្រ</span>
                   </button>
                 </div>
+              </div>
+
+              {/* Delivery Milestone Progress */}
+              <div className="print:hidden">
+                <OrderProgressTimeline order={createdOrder} compact />
               </div>
 
               {/* Order Invoice Details */}

@@ -5,6 +5,7 @@ import {
   doc,
   getDoc,
   getDocs,
+  onSnapshot,
   orderBy,
   query,
   setDoc,
@@ -1254,4 +1255,47 @@ export async function createBackupSnapshotInFirestore(
     handleFirestoreError(err, OperationType.CREATE, `backups/${id}`);
   }
   return { id, ...snap };
+}
+
+export function subscribeAdminOrderEventsInFirestore(
+  onChanged: () => void,
+  onError?: (err: unknown) => void
+): () => void {
+  let initialOrders = true;
+  let initialProofs = true;
+
+  const unsubOrders = onSnapshot(
+    collection(db, 'orders'),
+    () => {
+      if (initialOrders) {
+        initialOrders = false;
+        return;
+      }
+      onChanged();
+    },
+    (err) => {
+      console.error('Firestore orders listener error:', err);
+      onError?.(err);
+    }
+  );
+
+  const unsubProofs = onSnapshot(
+    collection(db, 'payment_proofs'),
+    () => {
+      if (initialProofs) {
+        initialProofs = false;
+        return;
+      }
+      onChanged();
+    },
+    (err) => {
+      console.error('Firestore payment_proofs listener error:', err);
+      onError?.(err);
+    }
+  );
+
+  return () => {
+    unsubOrders();
+    unsubProofs();
+  };
 }
