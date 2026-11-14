@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type ChangeEvent, type FormEvent } from 'react';
-import { signInWithPopup } from 'firebase/auth';
+import { onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth';
 import {
   BarChart3,
   Check,
@@ -8,7 +8,6 @@ import {
   Download,
   Edit3,
   FolderPlus,
-  KeyRound,
   LayoutDashboard,
   Loader2,
   LogOut,
@@ -64,6 +63,22 @@ import {
 } from '../utils/format.ts';
 import { SafeImage } from './SafeImage.tsx';
 import { AdminProductFormModal } from './AdminProductFormModal.tsx';
+import {
+  compressImageToBoundedDataUrl,
+  createBackupSnapshotInFirestore,
+  createCategoryInFirestore,
+  createCouponInFirestore,
+  deleteCategoryInFirestore,
+  deleteCouponInFirestore,
+  deleteProductInFirestore,
+  loadAdminDashboardFromFirestore,
+  saveSettingsInFirestore,
+  toggleCouponInFirestore,
+  toggleProductStockInFirestore,
+  updateCategoryInFirestore,
+  updateOrderStatusInFirestore,
+  verifyAdminFirebaseUser,
+} from '../services/firestoreShop.ts';
 
 interface AdminSessionUser {
   id: string;
@@ -90,10 +105,11 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
     }
   });
 
-  // Login form state
+  const [cloudMode, setCloudMode] = useState(false);
+
+  // Login form state (2-layer: Username + Password)
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
-  const [accessCode, setAccessCode] = useState('');
   const [loginError, setLoginError] = useState('');
   const [loginBusy, setLoginBusy] = useState(false);
 
@@ -158,6 +174,21 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
     setDataLoading(true);
     setActionError('');
     try {
+      if (cloudMode) {
+        const cloud = await loadAdminDashboardFromFirestore();
+        setStats(cloud.stats);
+        setCategories(cloud.categories);
+        setProducts(cloud.products);
+        setOrders(cloud.orders);
+        setCustomers(cloud.customers);
+        setPayments(cloud.payments);
+        setCoupons(cloud.coupons);
+        setSettingsForm(cloud.settings);
+        setBackups(cloud.backups);
+        setAdminUsers(cloud.adminUsers);
+        return;
+      }
+
       const headers = authHeaders();
       const [statsRes, catRes, prodRes, ordRes, custRes, payRes, cpnRes, setRes, bkpRes] =
         await Promise.all([
@@ -221,26 +252,61 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
     } finally {
       setDataLoading(false);
     }
-  }, [authHeaders, adminUser?.role]);
+  }, [authHeaders, adminUser?.role, cloudMode]);
 
   useEffect(() => {
+    let active = true;
     const checkSession = async () => {
       try {
         const res = await fetch(apiUrl('/api/admin/me'), {
           headers: authHeaders(),
           credentials: 'include',
         });
-        if (res.ok) {
-          const data = await safeReadJson<{ user: AdminSessionUser }>(res);
-          if (data?.user) setAdminUser(data.user);
+        const ct = res.headers.get('content-type') || '';
+        if (ct.toLowerCase().includes('application/json')) {
+          if (res.ok) {
+            const data = await safeReadJson<{ user: AdminSessionUser }>(res);
+            if (active && data?.user) setAdminUser(data.user);
+          }
+          if (active) setAuthLoading(false);
+          return;
         }
+        // Static / GitHub Pages host -> Serverless Firebase Cloud Online Mode
+        if (active) setCloudMode(true);
       } catch {
-        // Not logged in
-      } finally {
-        setAuthLoading(false);
+        if (active) setCloudMode(true);
       }
+
+      const unsub = onAuthStateChanged(auth, async (fbUser) => {
+        if (!active) return;
+        if (fbUser) {
+          const check = await verifyAdminFirebaseUser(fbUser);
+          if (check.authorized) {
+            setAdminUser({
+              id: fbUser.uid,
+              username: (fbUser.email || 'admin').split('@')[0],
+              displayName: fbUser.displayName || fbUser.email || 'Oudom Admin',
+              role: check.role,
+              email: fbUser.email || undefined,
+            });
+          } else {
+            await signOut(auth);
+            setAdminUser(null);
+          }
+        }
+        setAuthLoading(false);
+      });
+
+      return unsub;
     };
-    void checkSession();
+
+    const cleanupPromise = checkSession();
+    return () => {
+      active = false;
+      void cleanupPromise.then((unsub) => {
+        if (typeof unsub === 'function') unsub();
+      });
+    };
   }, [authHeaders]);
 
   useEffect(() => {
@@ -252,6 +318,13 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
   const handlePasswordLogin = async (e: FormEvent) => {
     e.preventDefault();
     setLoginError('');
+    if (cloudMode) {
+      setLoginError(
+        'នៅលើវេបសាយ Online (Firebase Cloud) សូមចុចប៊ូតុង «ចូលដោយប្រើគណនី Google (Super Admin)» ខាងក្រោម ដើម្បីផ្ទៀងផ្ទាត់សិទ្ធិម្ចាស់ហាង។'
+      );
+      return;
+    }
+
     setLoginBusy(true);
     try {
       const res = await fetch(apiUrl('/api/admin/login'), {
@@ -261,7 +334,6 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
         body: JSON.stringify({
           username: username.trim(),
           password,
-          accessCode: accessCode.trim(),
         }),
       });
       const data = await safeReadJson<{
@@ -270,11 +342,14 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
         error?: string;
       }>(res);
       if (!data) {
-        setLoginError('Admin Dashboard ត្រូវការ Node.js Server (មិនដំណើរការលើ GitHub Pages Static ទេ)។');
+        setCloudMode(true);
+        setLoginError(
+          'សូមចុចប៊ូតុង «ចូលដោយប្រើគណនី Google (Super Admin)» ខាងក្រោម ដើម្បីចូលគ្រប់គ្រងហាងលើ Firebase Cloud។'
+        );
         return;
       }
       if (!res.ok || !data.user) {
-        setLoginError(data.error || 'ការចូលគណនីបរាជ័យ');
+        setLoginError(data.error || 'ឈ្មោះអ្នកប្រើប្រាស់ ឬពាក្យសម្ងាត់មិនត្រឹមត្រូវទេ');
         return;
       }
       if (data.token) {
@@ -294,20 +369,36 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
   };
 
   const handleGoogleAdminLogin = async () => {
-    if (!accessCode.trim()) {
-      setLoginError('សូមបញ្ចូល Admin Access Code ជាមុនសិន មុនពេលចុច Sign in with Google');
-      return;
-    }
     setLoginError('');
     setLoginBusy(true);
     try {
       const cred = await signInWithPopup(auth, googleAuthProvider);
+
+      if (cloudMode) {
+        const check = await verifyAdminFirebaseUser(cred.user);
+        if (!check.authorized) {
+          await signOut(auth);
+          setLoginError(
+            `គណនី Google (${cred.user.email || 'Unknown'}) មិនមានសិទ្ធិ Admin ទេ (អនុញ្ញាតតែម្ចាស់ហាងប៉ុណ្ណោះ)។`
+          );
+          return;
+        }
+        setAdminUser({
+          id: cred.user.uid,
+          username: (cred.user.email || 'admin').split('@')[0],
+          displayName: cred.user.displayName || cred.user.email || 'Oudom Super Admin',
+          role: check.role,
+          email: cred.user.email || undefined,
+        });
+        return;
+      }
+
       const idToken = await cred.user.getIdToken();
       const res = await fetch(apiUrl('/api/admin/google-login'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ idToken, accessCode: accessCode.trim() }),
+        body: JSON.stringify({ idToken }),
       });
       const data = await safeReadJson<{
         user?: AdminSessionUser;
@@ -315,7 +406,20 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
         error?: string;
       }>(res);
       if (!data) {
-        setLoginError('Admin Dashboard ត្រូវការ Node.js Server (មិនដំណើរការលើ GitHub Pages Static ទេ)។');
+        setCloudMode(true);
+        const check = await verifyAdminFirebaseUser(cred.user);
+        if (!check.authorized) {
+          await signOut(auth);
+          setLoginError('គណនី Google នេះមិនមានសិទ្ធិ Admin ទេ');
+          return;
+        }
+        setAdminUser({
+          id: cred.user.uid,
+          username: (cred.user.email || 'admin').split('@')[0],
+          displayName: cred.user.displayName || cred.user.email || 'Oudom Super Admin',
+          role: check.role,
+          email: cred.user.email || undefined,
+        });
         return;
       }
       if (!res.ok || !data.user) {
@@ -331,15 +435,31 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
       }
       setAuthToken(data.token || null);
       setAdminUser(data.user);
-    } catch {
-      setLoginError('ការចូលដោយប្រើ Google បរាជ័យ');
+    } catch (err) {
+      const code = (err as { code?: string })?.code || '';
+      if (code === 'auth/unauthorized-domain') {
+        const host = typeof window !== 'undefined' ? window.location.hostname : 'github.io';
+        setLoginError(
+          `សូមបន្ថែម Domain "${host}" ទៅក្នុង Firebase Console → Authentication → Settings → Authorized domains ជាមុនសិន។`
+        );
+      } else if (code === 'auth/popup-closed-by-user') {
+        setLoginError('អ្នកបានបិទផ្ទាំងចូលគណនី Google មុនពេលបញ្ចប់។');
+      } else {
+        setLoginError('ការចូលដោយប្រើ Google បរាជ័យ');
+      }
     } finally {
       setLoginBusy(false);
     }
   };
 
   const handleLogout = async () => {
-    await fetch(apiUrl('/api/admin/logout'), { method: 'POST', credentials: 'include' });
+    if (!cloudMode) {
+      await fetch(apiUrl('/api/admin/logout'), { method: 'POST', credentials: 'include' }).catch(
+        () => {}
+      );
+    } else {
+      await signOut(auth).catch(() => {});
+    }
     try {
       sessionStorage.removeItem('oudom_admin_token');
     } catch {
@@ -348,11 +468,21 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
     setAdminUser(null);
     setAuthToken(null);
     setPassword('');
-    setAccessCode('');
   };
 
   const handleDeleteProduct = async (id: string) => {
     setActionError('');
+    if (cloudMode) {
+      try {
+        await deleteProductInFirestore(id);
+        setDeleteConfirmId(null);
+        setActionMsg('បានលុបផលិតផលដោយជោគជ័យ');
+        void loadAllAdminData();
+      } catch {
+        setActionError('មិនអាចលុបផលិតផលបានទេ');
+      }
+      return;
+    }
     const res = await fetch(apiUrl(`/api/admin/products/${id}`), {
       method: 'DELETE',
       headers: authHeaders(),
@@ -369,6 +499,11 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
   };
 
   const handleToggleStockStatus = async (p: Product) => {
+    if (cloudMode) {
+      await toggleProductStockInFirestore(p);
+      void loadAllAdminData();
+      return;
+    }
     const nextStatus = p.status === 'available' ? 'out_of_stock' : 'available';
     const res = await fetch(apiUrl(`/api/admin/products/${p.id}`), {
       method: 'PUT',
@@ -384,6 +519,18 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
   const handleUpdateOrderStatus = async (orderId: string, orderStatus: OrderStatus) => {
     setActionError('');
     setActionMsg('');
+    if (cloudMode) {
+      const targetOrder = orders.find((o) => o.id === orderId);
+      if (!targetOrder) return;
+      try {
+        await updateOrderStatusInFirestore(targetOrder, orderStatus);
+        setActionMsg('បានធ្វើបច្ចុប្បន្នភាពស្ថានភាពការបញ្ជាទិញ');
+        void loadAllAdminData();
+      } catch {
+        setActionError('មិនអាចកែប្រែស្ថានភាពបានទេ');
+      }
+      return;
+    }
     const res = await fetch(apiUrl(`/api/admin/orders/${orderId}/status`), {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
@@ -403,6 +550,10 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
     e.preventDefault();
     setActionError('');
     setActionMsg('');
+    if (cloudMode) {
+      setActionError('នៅលើ Firebase Cloud Mode ការគ្រប់គ្រងគណនី Google ត្រូវបានការពារដោយ Super Admin (krenoudom7@gmail.com)។');
+      return;
+    }
     const res = await fetch(apiUrl('/api/admin/users'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
@@ -429,6 +580,7 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
   };
 
   const handleToggleAdminActive = async (user: AdminUser) => {
+    if (cloudMode) return;
     const res = await fetch(apiUrl(`/api/admin/users/${user.id}`), {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
@@ -446,6 +598,21 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
   const handleRunManualBackup = async () => {
     setActionError('');
     setActionMsg('');
+    if (cloudMode) {
+      try {
+        await createBackupSnapshotInFirestore(adminUser?.email || adminUser?.username || 'admin', {
+          productCount: products.length,
+          orderCount: orders.length,
+          customerCount: customers.length,
+          paymentCount: payments.length,
+        });
+        setActionMsg('បានរក្សាទុក Snapshot Backup ថ្មីក្នុង Cloud Firestore រួចរាល់');
+        void loadAllAdminData();
+      } catch {
+        setActionError('បរាជ័យក្នុងការបង្កើត Backup');
+      }
+      return;
+    }
     const res = await fetch(apiUrl('/api/admin/backups'), {
       method: 'POST',
       headers: authHeaders(),
@@ -460,6 +627,26 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
   };
 
   const handleDownloadBackupJson = async () => {
+    if (cloudMode) {
+      const payload = {
+        exportedAt: new Date().toISOString(),
+        categories,
+        coupons,
+        settings: settingsForm,
+        products,
+        orders,
+        customers,
+        payments,
+      };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `oudom-shop-cloud-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      return;
+    }
     const res = await fetch(apiUrl('/api/admin/backups/export'), {
       headers: authHeaders(),
       credentials: 'include',
@@ -480,6 +667,10 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
   const handleTestTelegram = async () => {
     setActionError('');
     setActionMsg('');
+    if (cloudMode) {
+      setActionError('ការផ្ញើ Telegram Bot ស្វ័យប្រវត្តិដំណើរការតែពេលភ្ជាប់ជាមួយ Node.js Backend Server ប៉ុណ្ណោះ។');
+      return;
+    }
     const res = await fetch(apiUrl('/api/admin/telegram/test'), {
       method: 'POST',
       headers: authHeaders(),
@@ -501,6 +692,18 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
     setActionMsg('');
     setCatBusy(true);
     try {
+      if (cloudMode) {
+        const created = await createCategoryInFirestore(
+          catNameKm.trim(),
+          catNameEn.trim(),
+          categories.length
+        );
+        setCatNameKm('');
+        setCatNameEn('');
+        setActionMsg(`បានបន្ថែមប្រភេទ "${created.nameKm}" រួចរាល់`);
+        void loadAllAdminData();
+        return;
+      }
       const res = await fetch(apiUrl('/api/admin/categories'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
@@ -528,6 +731,17 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
     if (!catEditNameKm.trim()) return;
     setActionError('');
     setActionMsg('');
+    if (cloudMode) {
+      try {
+        await updateCategoryInFirestore(id, catEditNameKm.trim(), catEditNameEn.trim());
+        setCatEditingId(null);
+        setActionMsg('បានកែប្រែឈ្មោះប្រភេទទំនិញរួចរាល់');
+        void loadAllAdminData();
+      } catch {
+        setActionError('មិនអាចកែប្រែប្រភេទទំនិញបានទេ');
+      }
+      return;
+    }
     const res = await fetch(apiUrl(`/api/admin/categories/${id}`), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
@@ -550,6 +764,16 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
   const handleDeleteCategory = async (id: string) => {
     setActionError('');
     setActionMsg('');
+    if (cloudMode) {
+      try {
+        await deleteCategoryInFirestore(id);
+        setActionMsg('បានលុបប្រភេទទំនិញដោយជោគជ័យ');
+        void loadAllAdminData();
+      } catch {
+        setActionError('មិនអាចលុបប្រភេទទំនិញបានទេ');
+      }
+      return;
+    }
     const res = await fetch(apiUrl(`/api/admin/categories/${id}`), {
       method: 'DELETE',
       headers: authHeaders(),
@@ -571,6 +795,19 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
     setActionMsg('');
     setCouponBusy(true);
     try {
+      if (cloudMode) {
+        const created = await createCouponInFirestore({
+          code: couponCode.trim().toUpperCase(),
+          discountType: couponType,
+          discountValue: Number(couponValue),
+          minOrderUsd: Number(couponMinOrder || 0),
+          maxUses: Number(couponMaxUses || 0),
+        });
+        setCouponCode('');
+        setActionMsg(`បានបង្កើតកូដបញ្ចុះតម្លៃ "${created.code}" រួចរាល់`);
+        void loadAllAdminData();
+        return;
+      }
       const res = await fetch(apiUrl('/api/admin/coupons'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
@@ -591,12 +828,19 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
         setActionMsg(`បានបង្កើតកូដបញ្ចុះតម្លៃ "${data.coupon.code}" រួចរាល់`);
         void loadAllAdminData();
       }
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'មិនអាចបង្កើតកូដបញ្ចុះតម្លៃបានទេ');
     } finally {
       setCouponBusy(false);
     }
   };
 
   const handleToggleCouponActive = async (coupon: Coupon) => {
+    if (cloudMode) {
+      await toggleCouponInFirestore(coupon);
+      void loadAllAdminData();
+      return;
+    }
     const res = await fetch(apiUrl(`/api/admin/coupons/${coupon.id}`), {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
@@ -607,6 +851,12 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
   };
 
   const handleDeleteCoupon = async (id: string) => {
+    if (cloudMode) {
+      await deleteCouponInFirestore(id);
+      setActionMsg('បានលុបកូដបញ្ចុះតម្លៃរួចរាល់');
+      void loadAllAdminData();
+      return;
+    }
     const res = await fetch(apiUrl(`/api/admin/coupons/${id}`), {
       method: 'DELETE',
       headers: authHeaders(),
@@ -625,6 +875,18 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
     setActionMsg('');
     setQrUploadingField(target);
     try {
+      if (cloudMode) {
+        const dataUrl = await compressImageToBoundedDataUrl(file, 760, 320000);
+        setSettingsForm({
+          ...settingsForm,
+          ...(target === 'usd'
+            ? { abaQrUsdImage: dataUrl }
+            : { abaQrKhrImage: dataUrl }),
+        });
+        setActionMsg('បាន Upload រូបភាព KHQR រួចរាល់ — សូមចុច «រក្សាទុកការកំណត់ហាង» ដើម្បីអនុវត្តលើហាង!');
+        return;
+      }
+
       const optimized = await compressImageToWebP(file, 900);
       const formData = new FormData();
       formData.append('image', optimized);
@@ -661,6 +923,13 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
     setActionMsg('');
     setSettingsBusy(true);
     try {
+      if (cloudMode) {
+        const updated = await saveSettingsInFirestore(settingsForm);
+        setSettingsForm(updated);
+        setActionMsg('បានរក្សាទុកការកំណត់ហាង និងបង្ហាញលើទំព័រដើមភ្លាមៗ!');
+        void loadAllAdminData();
+        return;
+      }
       const res = await fetch(apiUrl('/api/admin/settings'), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
@@ -688,13 +957,8 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
     );
   }
 
-  // ---------------- LOGIN SCREEN ----------------
+  // ---------------- LOGIN SCREEN (2-LAYER AUTH) ----------------
   if (!adminUser) {
-    const isGitHubPagesWithoutApi =
-      typeof window !== 'undefined' &&
-      window.location.hostname.endsWith('.github.io') &&
-      !import.meta.env.VITE_API_BASE_URL?.trim();
-
     return (
       <div className="min-h-screen flex flex-col justify-center bg-[#0B0B0C] px-4 py-10 text-white">
         <div className="mx-auto w-full max-w-md rounded-2xl border border-white/10 bg-[#141416] p-6 sm:p-8 shadow-2xl">
@@ -713,96 +977,102 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
             </button>
           </div>
 
-          {isGitHubPagesWithoutApi && (
-            <div className="mt-4 rounded-xl border border-amber-500/40 bg-amber-950/50 p-3.5 text-xs text-amber-100 leading-relaxed space-y-1">
-              <p className="font-semibold text-amber-300">
-                អ្នកកំពុងបើកលើ GitHub Pages (Static Web)
-              </p>
-              <p>
-                ទំព័រ Static មិនមាន Node.js Backend ទេ។ សូមបើក <span className="font-mono-num">/admin</span> លើ Link App Server របស់អ្នក (ឬកំណត់{' '}
-                <code className="text-amber-200">VITE_API_BASE_URL</code> ក្នុង GitHub Repository Variables) ដើម្បីចូលគ្រប់គ្រងហាង។
-              </p>
-            </div>
-          )}
-
-          <form onSubmit={handlePasswordLogin} className="mt-6 space-y-4">
-            <div>
-              <label className="block text-xs font-medium text-white/75 mb-1.5">
-                ឈ្មោះអ្នកប្រើប្រាស់ (Username)
-              </label>
-              <input
-                type="text"
-                required
-                autoComplete="username"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                placeholder="udom"
-                className="h-12 w-full rounded-xl border border-white/15 bg-black/40 px-4 text-sm text-white placeholder:text-white/35 focus:border-[#C9A227] focus:outline-none"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-medium text-white/75 mb-1.5">
-                ពាក្យសម្ងាត់ (Password)
-              </label>
-              <input
-                type="password"
-                required
-                autoComplete="current-password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
-                className="h-12 w-full rounded-xl border border-white/15 bg-black/40 px-4 text-sm text-white placeholder:text-white/35 focus:border-[#C9A227] focus:outline-none"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-medium text-white/75 mb-1.5">
-                លេខកូដសម្ងាត់ Admin (Admin Access Code)
-              </label>
-              <div className="relative">
-                <KeyRound className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[#C9A227]" />
-                <input
-                  type="password"
-                  required
-                  value={accessCode}
-                  onChange={(e) => setAccessCode(e.target.value)}
-                  placeholder="បញ្ចូល Access Code ពី Server"
-                  className="h-12 w-full rounded-xl border border-white/15 bg-black/40 pl-10 pr-4 text-sm text-white placeholder:text-white/35 focus:border-[#C9A227] focus:outline-none"
-                />
+          {cloudMode ? (
+            <div className="mt-5 space-y-4">
+              <div className="rounded-xl border border-[#C9A227]/35 bg-[#C9A227]/10 p-3.5 text-xs text-[#F5DF98] leading-relaxed">
+                <p className="font-semibold text-[#E5C158]">
+                  ប្រព័ន្ធ Online · Firebase Cloud Database
+                </p>
+                <p className="mt-1 text-white/80">
+                  ចូលដោយប្រើគណនី Google ម្ចាស់ហាង (<span className="font-mono-num">krenoudom7@gmail.com</span>) ដើម្បីគ្រប់គ្រងទំនិញ ការបញ្ជាទិញ និងរូបភាព KHQR ផ្ទាល់តាម Online។
+                </p>
               </div>
-            </div>
 
-            {loginError && (
-              <p className="rounded-xl border border-red-500/40 bg-red-950/60 p-3 text-xs text-red-200">
-                {loginError}
+              {loginError && (
+                <p className="rounded-xl border border-red-500/40 bg-red-950/60 p-3 text-xs text-red-200 leading-relaxed">
+                  {loginError}
+                </p>
+              )}
+
+              <button
+                type="button"
+                onClick={handleGoogleAdminLogin}
+                disabled={loginBusy}
+                className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#C9A227] text-sm font-bold text-[#0B0B0C] transition hover:bg-[#D4B038] disabled:opacity-50"
+              >
+                {loginBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Shield className="h-4 w-4" />}
+                <span>ចូលដោយប្រើគណនី Google (ម្ចាស់ហាង)</span>
+              </button>
+
+              <p className="text-[11px] text-center text-white/45 leading-relaxed">
+                ការពារសុវត្ថិភាព ២ ជាន់ · អនុញ្ញាតតែគណនី Google ដែលម្ចាស់ហាងបានកំណត់ប៉ុណ្ណោះ
               </p>
-            )}
+            </div>
+          ) : (
+            <>
+              <form onSubmit={handlePasswordLogin} className="mt-5 space-y-4">
+                <div>
+                  <label className="block text-xs font-medium text-white/75 mb-1.5">
+                    ឈ្មោះអ្នកប្រើប្រាស់ (Username)
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    autoComplete="username"
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                    placeholder="udom"
+                    className="h-12 w-full rounded-xl border border-white/15 bg-[#0C0C0F] px-4 text-sm text-white placeholder:text-white/35 focus:border-[#C9A227] focus:outline-none [&:-webkit-autofill]:shadow-[inset_0_0_0_1000px_#0c0c0f] [&:-webkit-autofill]:[-webkit-text-fill-color:#ffffff]"
+                  />
+                </div>
 
-            <button
-              type="submit"
-              disabled={loginBusy}
-              className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#C9A227] text-sm font-bold text-[#0B0B0C] transition hover:bg-[#D4B038] disabled:opacity-50"
-            >
-              {loginBusy && <Loader2 className="h-4 w-4 animate-spin" />}
-              <span>ចូលប្រព័ន្ធ Admin</span>
-            </button>
-          </form>
+                <div>
+                  <label className="block text-xs font-medium text-white/75 mb-1.5">
+                    ពាក្យសម្ងាត់ (Password)
+                  </label>
+                  <input
+                    type="password"
+                    required
+                    autoComplete="current-password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="••••••••"
+                    className="h-12 w-full rounded-xl border border-white/15 bg-[#0C0C0F] px-4 text-sm text-white placeholder:text-white/35 focus:border-[#C9A227] focus:outline-none [&:-webkit-autofill]:shadow-[inset_0_0_0_1000px_#0c0c0f] [&:-webkit-autofill]:[-webkit-text-fill-color:#ffffff]"
+                  />
+                </div>
 
-          <div className="mt-5 pt-5 border-t border-white/10">
-            <button
-              type="button"
-              onClick={handleGoogleAdminLogin}
-              disabled={loginBusy}
-              className="flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-white/20 bg-white/5 text-xs font-semibold text-white hover:bg-white/10 disabled:opacity-50"
-            >
-              <Shield className="h-4 w-4 text-[#C9A227]" />
-              <span>ចូលដោយប្រើគណនី Google (Super Admin)</span>
-            </button>
-            <p className="mt-3 text-[11px] text-center text-white/45">
-              តម្រូវឱ្យបញ្ចូល Admin Access Code និងផ្ទៀងផ្ទាត់សិទ្ធិនៅលើ Server ជានិច្ច
-            </p>
-          </div>
+                {loginError && (
+                  <p className="rounded-xl border border-red-500/40 bg-red-950/60 p-3 text-xs text-red-200 leading-relaxed">
+                    {loginError}
+                  </p>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={loginBusy}
+                  className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#C9A227] text-sm font-bold text-[#0B0B0C] transition hover:bg-[#D4B038] disabled:opacity-50"
+                >
+                  {loginBusy && <Loader2 className="h-4 w-4 animate-spin" />}
+                  <span>ចូលប្រព័ន្ធ Admin (២ ជាន់)</span>
+                </button>
+              </form>
+
+              <div className="mt-5 pt-5 border-t border-white/10">
+                <button
+                  type="button"
+                  onClick={handleGoogleAdminLogin}
+                  disabled={loginBusy}
+                  className="flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-white/20 bg-white/5 text-xs font-semibold text-white hover:bg-white/10 disabled:opacity-50"
+                >
+                  <Shield className="h-4 w-4 text-[#C9A227]" />
+                  <span>ចូលដោយប្រើគណនី Google (Super Admin)</span>
+                </button>
+                <p className="mt-3 text-[11px] text-center text-white/45">
+                  ការពារសុវត្ថិភាព ២ ជាន់ · អនុញ្ញាតតែគណនីម្ចាស់ហាងដែលបានផ្ទៀងផ្ទាត់ប៉ុណ្ណោះ
+                </p>
+              </div>
+            </>
+          )}
         </div>
       </div>
     );
@@ -2395,6 +2665,7 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
         editingProduct={editingProduct}
         categories={categories}
         authToken={authToken}
+        cloudMode={cloudMode}
         onClose={() => setProductModalOpen(false)}
         onCategoryCreated={(cat) => setCategories((prev) => [...prev, cat])}
         onSaved={() => {

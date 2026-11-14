@@ -26,6 +26,7 @@ import {
   STATIC_FALLBACK_PRODUCTS,
   STATIC_FALLBACK_SETTINGS,
 } from '../utils/bundledAssets.ts';
+import { fetchPublicCatalogFromFirestore } from '../services/firestoreShop.ts';
 import { SafeImage } from './SafeImage.tsx';
 import { ProductDetailModal } from './ProductDetailModal.tsx';
 import { CartCheckoutDrawer } from './CartCheckoutDrawer.tsx';
@@ -53,7 +54,6 @@ export function Storefront({ onNavigateAdmin }: StorefrontProps) {
   const [categories, setCategories] = useState<Category[]>(DEFAULT_CATEGORIES);
   const [settings, setSettings] = useState<StoreSettings | null>(null);
   const [announcementDismissed, setAnnouncementDismissed] = useState(false);
-  const [staticPreviewMode, setStaticPreviewMode] = useState(false);
 
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
@@ -90,7 +90,6 @@ export function Storefront({ onNavigateAdmin }: StorefrontProps) {
   const loadStoreData = async () => {
     setLoading(true);
     setLoadError('');
-    setStaticPreviewMode(false);
     try {
       const [cfgRes, prodRes] = await Promise.all([
         fetch(apiUrl('/api/config/public')),
@@ -129,10 +128,15 @@ export function Storefront({ onNavigateAdmin }: StorefrontProps) {
 
       const prodData = await safeReadJson<{ products?: Product[]; error?: string }>(prodRes);
       if (!prodData) {
-        // Static hosting fallback (e.g. GitHub Pages without Node.js API server)
-        setStaticPreviewMode(true);
-        setSettings(STATIC_FALLBACK_SETTINGS);
-        setProducts(STATIC_FALLBACK_PRODUCTS);
+        // Serverless / GitHub Pages Online Mode via Cloud Firestore
+        const cloud = await fetchPublicCatalogFromFirestore();
+        setSettings(cloud.settings);
+        setKhrRate(cloud.settings.khrRate || 4100);
+        setFreeShippingThresholdUsd(cloud.settings.freeShippingThresholdUsd ?? 50);
+        setPhnomPenhShippingUsd(cloud.settings.phnomPenhShippingUsd ?? 1.5);
+        setProvinceShippingUsd(cloud.settings.provinceShippingUsd ?? 2.5);
+        if (cloud.categories.length > 0) setCategories(cloud.categories);
+        setProducts(cloud.products);
         return;
       }
 
@@ -142,9 +146,19 @@ export function Storefront({ onNavigateAdmin }: StorefrontProps) {
         setProducts(prodData.products || []);
       }
     } catch {
-      setStaticPreviewMode(true);
-      setSettings(STATIC_FALLBACK_SETTINGS);
-      setProducts(STATIC_FALLBACK_PRODUCTS);
+      try {
+        const cloud = await fetchPublicCatalogFromFirestore();
+        setSettings(cloud.settings);
+        setKhrRate(cloud.settings.khrRate || 4100);
+        setFreeShippingThresholdUsd(cloud.settings.freeShippingThresholdUsd ?? 50);
+        setPhnomPenhShippingUsd(cloud.settings.phnomPenhShippingUsd ?? 1.5);
+        setProvinceShippingUsd(cloud.settings.provinceShippingUsd ?? 2.5);
+        if (cloud.categories.length > 0) setCategories(cloud.categories);
+        setProducts(cloud.products);
+      } catch {
+        setSettings(STATIC_FALLBACK_SETTINGS);
+        setProducts(STATIC_FALLBACK_PRODUCTS);
+      }
     } finally {
       setLoading(false);
     }
@@ -299,12 +313,6 @@ export function Storefront({ onNavigateAdmin }: StorefrontProps) {
           >
             <X className="h-3.5 w-3.5" />
           </button>
-        </div>
-      )}
-
-      {staticPreviewMode && (
-        <div className="border-b border-[#C9A227]/30 bg-[#FFF9E6] px-4 py-2 text-center text-xs text-[#5E4706] print:hidden">
-          កំពុងបង្ហាញជាទម្រង់ Static Preview (GitHub Pages)។ ដើម្បីប្រើការបញ្ជាទិញផ្ទាល់ ABA PayWay QR និង Admin Dashboard សូមបើកតាម Node.js Server។
         </div>
       )}
 

@@ -10,6 +10,10 @@ service cloud.firestore {
       return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
+    function isValidSha256(id) {
+      return id is string && id.size() == 64 && id.matches('^[a-f0-9]{64}$');
+    }
+
     function incoming() {
       return request.resource.data;
     }
@@ -52,8 +56,15 @@ service cloud.firestore {
         (!('discountPriceUsd' in data) || data.discountPriceUsd == null || (data.discountPriceUsd is number && data.discountPriceUsd >= 0)) &&
         data.stock is int && data.stock >= 0 &&
         data.status in ['available', 'out_of_stock'] &&
-        data.imageUrl is string && data.imageUrl.size() >= 1 && data.imageUrl.size() <= 1000 &&
-        (!('description' in data) || (data.description is string && data.description.size() <= 2000));
+        data.imageUrl is string && data.imageUrl.size() >= 1 && data.imageUrl.size() <= 350000 &&
+        (!('description' in data) || (data.description is string && data.description.size() <= 2000)) &&
+        (!('sizes' in data) || (data.sizes is list && data.sizes.size() <= 20 && (data.sizes.size() == 0 || (data.sizes[0] is string && data.sizes[0].size() <= 40)))) &&
+        (!('colors' in data) || (data.colors is list && data.colors.size() <= 20 && (data.colors.size() == 0 || (data.colors[0] is string && data.colors[0].size() <= 40)))) &&
+        (!('isNew' in data) || data.isNew is bool) &&
+        (!('isPopular' in data) || data.isPopular is bool) &&
+        (!('soldCount' in data) || (data.soldCount is int && data.soldCount >= 0)) &&
+        (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 64)) &&
+        (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 64));
     }
 
     function isValidCategory(data) {
@@ -61,14 +72,155 @@ service cloud.firestore {
         data.keys().hasOnly(['slug', 'nameKm', 'nameEn', 'sortOrder', 'createdAt', 'updatedAt']) &&
         data.slug is string && data.slug.size() >= 1 && data.slug.size() <= 64 &&
         data.nameKm is string && data.nameKm.size() >= 1 && data.nameKm.size() <= 80 &&
-        data.sortOrder is int;
+        (!('nameEn' in data) || (data.nameEn is string && data.nameEn.size() <= 80)) &&
+        data.sortOrder is int &&
+        (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 64)) &&
+        (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 64));
+    }
+
+    function isValidStoreSettings(data) {
+      return data.keys().hasAll(['shopName', 'khrRate', 'freeShippingThresholdUsd']) &&
+        data.keys().hasOnly([
+          'shopName', 'heroEyebrow', 'heroTitle', 'heroSubtitle', 'announcementText',
+          'contactPhone', 'contactAddress', 'telegramContact',
+          'abaAccountName', 'abaAccountId', 'abaAccountUsd', 'abaAccountKhr',
+          'abaQrUsdImage', 'abaQrKhrImage',
+          'khrRate', 'freeShippingThresholdUsd', 'phnomPenhShippingUsd', 'provinceShippingUsd', 'updatedAt'
+        ]) &&
+        data.shopName is string && data.shopName.size() >= 1 && data.shopName.size() <= 100 &&
+        data.khrRate is number && data.khrRate >= 100 &&
+        data.freeShippingThresholdUsd is number && data.freeShippingThresholdUsd >= 0 &&
+        (!('heroEyebrow' in data) || (data.heroEyebrow is string && data.heroEyebrow.size() <= 140)) &&
+        (!('heroTitle' in data) || (data.heroTitle is string && data.heroTitle.size() <= 200)) &&
+        (!('heroSubtitle' in data) || (data.heroSubtitle is string && data.heroSubtitle.size() <= 400)) &&
+        (!('announcementText' in data) || (data.announcementText is string && data.announcementText.size() <= 240)) &&
+        (!('contactPhone' in data) || (data.contactPhone is string && data.contactPhone.size() <= 60)) &&
+        (!('contactAddress' in data) || (data.contactAddress is string && data.contactAddress.size() <= 200)) &&
+        (!('telegramContact' in data) || (data.telegramContact is string && data.telegramContact.size() <= 80)) &&
+        (!('abaAccountName' in data) || (data.abaAccountName is string && data.abaAccountName.size() <= 100)) &&
+        (!('abaAccountId' in data) || (data.abaAccountId is string && data.abaAccountId.size() <= 40)) &&
+        (!('abaAccountUsd' in data) || (data.abaAccountUsd is string && data.abaAccountUsd.size() <= 40)) &&
+        (!('abaAccountKhr' in data) || (data.abaAccountKhr is string && data.abaAccountKhr.size() <= 40)) &&
+        (!('abaQrUsdImage' in data) || (data.abaQrUsdImage is string && data.abaQrUsdImage.size() <= 350000)) &&
+        (!('abaQrKhrImage' in data) || (data.abaQrKhrImage is string && data.abaQrKhrImage.size() <= 350000)) &&
+        (!('phnomPenhShippingUsd' in data) || (data.phnomPenhShippingUsd is number && data.phnomPenhShippingUsd >= 0)) &&
+        (!('provinceShippingUsd' in data) || (data.provinceShippingUsd is number && data.provinceShippingUsd >= 0)) &&
+        (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 64));
+    }
+
+    function isValidCoupon(data) {
+      return data.keys().hasAll(['code', 'discountType', 'discountValue', 'active']) &&
+        data.keys().hasOnly([
+          'code', 'discountType', 'discountValue', 'minOrderUsd', 'maxUses', 'usedCount', 'active', 'expiresAt', 'createdAt'
+        ]) &&
+        data.code is string && data.code.size() >= 2 && data.code.size() <= 32 &&
+        data.discountType in ['percent', 'fixed'] &&
+        data.discountValue is number && data.discountValue >= 0 &&
+        data.active is bool &&
+        (!('minOrderUsd' in data) || (data.minOrderUsd is number && data.minOrderUsd >= 0)) &&
+        (!('maxUses' in data) || (data.maxUses is int && data.maxUses >= 0)) &&
+        (!('usedCount' in data) || (data.usedCount is int && data.usedCount >= 0)) &&
+        (!('expiresAt' in data) || data.expiresAt == null || (data.expiresAt is string && data.expiresAt.size() <= 64)) &&
+        (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 64));
+    }
+
+    function isValidOrderPayload(data) {
+      return data.keys().hasAll([
+          'orderNumber', 'customerId', 'customerName', 'customerPhone', 'shippingAddress',
+          'deliveryZone', 'items', 'subtotalUsd', 'shippingFeeUsd', 'discountUsd',
+          'totalUsd', 'totalKhr', 'currency', 'paymentMethod', 'paymentStatus', 'orderStatus',
+          'abaTranId', 'abaMode', 'telegramNotified', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'orderNumber', 'customerId', 'customerName', 'customerPhone', 'shippingAddress',
+          'deliveryZone', 'notes', 'items', 'subtotalUsd', 'shippingFeeUsd', 'discountUsd',
+          'couponCode', 'couponDiscountUsd', 'totalUsd', 'totalKhr', 'currency',
+          'paymentMethod', 'paymentStatus', 'orderStatus', 'abaTranId', 'abaMode',
+          'paymentSlipUrl', 'paymentReference', 'paymentSubmittedAt', 'telegramNotified',
+          'userId', 'createdAt', 'updatedAt'
+        ]) &&
+        data.orderNumber is string && data.orderNumber.size() >= 4 && data.orderNumber.size() <= 64 &&
+        data.customerId is string && data.customerId.size() >= 1 && data.customerId.size() <= 128 &&
+        data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 120 &&
+        data.customerPhone is string && data.customerPhone.size() >= 6 && data.customerPhone.size() <= 32 &&
+        data.shippingAddress is string && data.shippingAddress.size() >= 3 && data.shippingAddress.size() <= 400 &&
+        data.deliveryZone in ['phnom_penh', 'province'] &&
+        (!('notes' in data) || (data.notes is string && data.notes.size() <= 500)) &&
+        data.items is list && data.items.size() >= 1 && data.items.size() <= 50 && data.items[0] is map &&
+        data.subtotalUsd is number && data.subtotalUsd >= 0 &&
+        data.shippingFeeUsd is number && data.shippingFeeUsd >= 0 &&
+        data.discountUsd is number && data.discountUsd >= 0 &&
+        (!('couponCode' in data) || (data.couponCode is string && data.couponCode.size() <= 32)) &&
+        (!('couponDiscountUsd' in data) || (data.couponDiscountUsd is number && data.couponDiscountUsd >= 0)) &&
+        data.totalUsd is number && data.totalUsd >= 0 &&
+        data.totalKhr is int && data.totalKhr >= 0 &&
+        data.currency in ['USD', 'KHR'] &&
+        data.paymentMethod in ['bank_qr', 'cod', 'aba_payway', 'aba_khqr'] &&
+        data.paymentStatus in ['pending', 'paid', 'failed'] &&
+        data.orderStatus in ['pending', 'paid', 'processing', 'shipping', 'completed', 'cancelled', 'failed'] &&
+        data.abaTranId is string && data.abaTranId.size() >= 1 && data.abaTranId.size() <= 64 &&
+        data.abaMode in ['live', 'direct_qr', 'cod', 'unconfigured'] &&
+        (!('paymentSlipUrl' in data) || (data.paymentSlipUrl is string && data.paymentSlipUrl.size() <= 350000)) &&
+        (!('paymentReference' in data) || (data.paymentReference is string && data.paymentReference.size() <= 120)) &&
+        (!('paymentSubmittedAt' in data) || (data.paymentSubmittedAt is string && data.paymentSubmittedAt.size() <= 64)) &&
+        data.telegramNotified is bool &&
+        (!('userId' in data) || data.userId == null || (isVerifiedUser() && data.userId == request.auth.uid)) &&
+        data.createdAt is string && data.createdAt.size() <= 64 &&
+        data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidOrderTracking(data) {
+      return data.keys().hasAll([
+          'orderId', 'orderNumber', 'paymentMethod', 'paymentStatus', 'orderStatus',
+          'totalUsd', 'totalKhr', 'currency', 'items', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'orderId', 'orderNumber', 'paymentMethod', 'paymentStatus', 'orderStatus',
+          'totalUsd', 'totalKhr', 'currency', 'items', 'paymentSubmittedAt', 'createdAt', 'updatedAt'
+        ]) &&
+        data.orderId is string && data.orderId.size() >= 1 && data.orderId.size() <= 128 &&
+        data.orderNumber is string && data.orderNumber.size() >= 4 && data.orderNumber.size() <= 64 &&
+        data.paymentMethod in ['bank_qr', 'cod', 'aba_payway', 'aba_khqr'] &&
+        data.paymentStatus in ['pending', 'paid', 'failed'] &&
+        data.orderStatus in ['pending', 'paid', 'processing', 'shipping', 'completed', 'cancelled', 'failed'] &&
+        data.totalUsd is number && data.totalUsd >= 0 &&
+        data.totalKhr is int && data.totalKhr >= 0 &&
+        data.currency in ['USD', 'KHR'] &&
+        data.items is list && data.items.size() >= 1 && data.items.size() <= 50 && data.items[0] is map &&
+        (!('paymentSubmittedAt' in data) || (data.paymentSubmittedAt is string && data.paymentSubmittedAt.size() <= 64)) &&
+        data.createdAt is string && data.createdAt.size() <= 64 &&
+        data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidPaymentProof(data) {
+      return data.keys().hasAll(['orderId', 'orderNumber', 'submittedAt']) &&
+        data.keys().hasOnly(['orderId', 'orderNumber', 'reference', 'slipUrl', 'submittedAt']) &&
+        data.orderId is string && data.orderId.size() >= 1 && data.orderId.size() <= 128 &&
+        data.orderNumber is string && data.orderNumber.size() >= 4 && data.orderNumber.size() <= 64 &&
+        (!('reference' in data) || (data.reference is string && data.reference.size() <= 120)) &&
+        (!('slipUrl' in data) || (data.slipUrl is string && data.slipUrl.size() <= 350000)) &&
+        data.submittedAt is string && data.submittedAt.size() <= 64;
+    }
+
+    function isValidBackup(data) {
+      return data.keys().hasAll(['createdBy', 'productCount', 'orderCount', 'customerCount', 'paymentCount', 'trigger', 'createdAt']) &&
+        data.keys().hasOnly(['createdBy', 'productCount', 'orderCount', 'customerCount', 'paymentCount', 'trigger', 'createdAt']) &&
+        data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 128 &&
+        data.productCount is int && data.productCount >= 0 &&
+        data.orderCount is int && data.orderCount >= 0 &&
+        data.customerCount is int && data.customerCount >= 0 &&
+        data.paymentCount is int && data.paymentCount >= 0 &&
+        data.trigger in ['manual', 'auto_scheduled'] &&
+        data.createdAt is string && data.createdAt.size() <= 64;
     }
 
     // Dynamic Categories: public read, admin-only write
     match /categories/{categoryId} {
       allow get: if isValidId(categoryId);
       allow list: if true;
-      allow create, update: if isAdmin() && isValidId(categoryId) && isValidCategory(incoming());
+      allow create: if isAdmin() && isValidId(categoryId) && isValidCategory(incoming());
+      allow update: if isAdmin() && isValidId(categoryId) && isValidCategory(incoming()) &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['slug', 'nameKm', 'nameEn', 'sortOrder', 'updatedAt']);
       allow delete: if isAdmin() && isValidId(categoryId);
     }
 
@@ -76,14 +228,28 @@ service cloud.firestore {
     match /settings/{settingId} {
       allow get: if isValidId(settingId);
       allow list: if true;
-      allow write: if false;
+      allow create: if isAdmin() && isValidId(settingId) && isValidStoreSettings(incoming());
+      allow update: if isAdmin() && isValidId(settingId) && isValidStoreSettings(incoming()) &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'shopName', 'heroEyebrow', 'heroTitle', 'heroSubtitle', 'announcementText',
+          'contactPhone', 'contactAddress', 'telegramContact',
+          'abaAccountName', 'abaAccountId', 'abaAccountUsd', 'abaAccountKhr',
+          'abaQrUsdImage', 'abaQrKhrImage',
+          'khrRate', 'freeShippingThresholdUsd', 'phnomPenhShippingUsd', 'provinceShippingUsd', 'updatedAt'
+        ]);
+      allow delete: if false;
     }
 
-    // Coupons: admin-only read, server-only write
+    // Coupons: exact code get allowed for checkout validation, list & writes strictly admin-only
     match /coupons/{couponId} {
-      allow get: if isAdmin() && isValidId(couponId);
+      allow get: if isValidId(couponId);
       allow list: if isAdmin();
-      allow create, update, delete: if false;
+      allow create: if isAdmin() && isValidId(couponId) && isValidCoupon(incoming());
+      allow update: if isAdmin() && isValidId(couponId) && isValidCoupon(incoming()) &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'code', 'discountType', 'discountValue', 'minOrderUsd', 'maxUses', 'usedCount', 'active', 'expiresAt'
+        ]);
+      allow delete: if isAdmin() && isValidId(couponId);
     }
 
     // Public catalog read; strictly admin-only write
@@ -100,11 +266,38 @@ service cloud.firestore {
       allow delete: if isAdmin() && isValidId(productId);
     }
 
-    // Orders contain customer PII; read only by owner or admin, writes handled by backend Admin SDK
+    // Orders contain customer PII; read only by admin or owner, create allowed with strict pending-only schema, updates admin-only
     match /orders/{orderId} {
-      allow get: if isValidId(orderId) && (isAdmin() || (isVerifiedUser() && resource.data.userId == request.auth.uid));
-      allow list: if isAdmin() || (isVerifiedUser() && resource.data.userId == request.auth.uid);
-      allow create, update, delete: if false;
+      allow get: if isValidId(orderId) && (isAdmin() || (isVerifiedUser() && existing().userId == request.auth.uid));
+      allow list: if isAdmin() || (isVerifiedUser() && existing().userId == request.auth.uid);
+      allow create: if isValidId(orderId) && isValidOrderPayload(incoming()) &&
+        incoming().paymentStatus == 'pending' && incoming().orderStatus == 'pending';
+      allow update: if isAdmin() && isValidId(orderId) && isValidOrderPayload(incoming()) &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'paymentStatus', 'orderStatus', 'paymentSlipUrl', 'paymentReference', 'paymentSubmittedAt', 'updatedAt'
+        ]);
+      allow delete: if isAdmin() && isValidId(orderId);
+    }
+
+    // Zero-PII public order tracking keyed by SHA-256(orderNumber:phone)
+    match /order_tracking/{trackingKey} {
+      allow get: if isValidSha256(trackingKey);
+      allow list: if isAdmin();
+      allow create: if isValidSha256(trackingKey) && isValidOrderTracking(incoming()) &&
+        incoming().paymentStatus == 'pending' && incoming().orderStatus == 'pending';
+      allow update: if isAdmin() && isValidSha256(trackingKey) && isValidOrderTracking(incoming()) &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'paymentStatus', 'orderStatus', 'paymentSubmittedAt', 'updatedAt'
+        ]);
+      allow delete: if isAdmin() && isValidSha256(trackingKey);
+    }
+
+    // Customer payment slip submissions; readable & manageable only by admin
+    match /payment_proofs/{proofId} {
+      allow get: if isAdmin() && isValidId(proofId);
+      allow list: if isAdmin();
+      allow create: if isValidId(proofId) && isValidPaymentProof(incoming());
+      allow update, delete: if isAdmin() && isValidId(proofId);
     }
 
     // Customer PII directory: admin-only read, server-only write
@@ -125,7 +318,7 @@ service cloud.firestore {
     match /admin_roles/{uid} {
       allow get: if isValidId(uid) && (isAdmin() || (isVerifiedUser() && request.auth.uid == uid));
       allow list: if isAdmin();
-      allow create, update, delete: if false;
+      allow create, update, delete: if isBootstrappedSuperAdmin() && isValidId(uid);
     }
 
     // Server-only collections (never accessible directly from client SDK)
@@ -140,7 +333,8 @@ service cloud.firestore {
     match /backups/{backupId} {
       allow get: if isAdmin() && isValidId(backupId);
       allow list: if isAdmin();
-      allow create, update, delete: if false;
+      allow create: if isAdmin() && isValidId(backupId) && isValidBackup(incoming());
+      allow update, delete: if false;
     }
 
     // Connection check document

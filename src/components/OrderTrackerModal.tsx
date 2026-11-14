@@ -8,6 +8,7 @@ import {
   getPaymentMethodLabel,
   ORDER_STATUS_LABELS,
 } from '../utils/format.ts';
+import { lookupOrderTrackingInFirestore } from '../services/firestoreShop.ts';
 
 interface OrderTrackerModalProps {
   open: boolean;
@@ -46,6 +47,11 @@ export function OrderTrackerModal({ open, khrRate, onClose }: OrderTrackerModalP
       const res = await fetch(apiUrl(`/api/orders/lookup?${params.toString()}`));
       const data = await safeReadJson<{ order?: Order; error?: string }>(res);
       if (!data) {
+        const cloudMatch = await lookupOrderTrackingInFirestore(orderNumber, phone);
+        if (cloudMatch) {
+          setOrder(cloudMatch);
+          return;
+        }
         try {
           const raw = localStorage.getItem('oudom_static_orders');
           const list = raw ? (JSON.parse(raw) as Order[]) : [];
@@ -63,7 +69,7 @@ export function OrderTrackerModal({ open, khrRate, onClose }: OrderTrackerModalP
         } catch {
           // Ignore storage error
         }
-        setError('មុខងារតាមដាន Order លើ Server ត្រូវការការតភ្ជាប់ Node.js Server។');
+        setError('រកមិនឃើញលេខកូដបញ្ជាទិញ ឬលេខទូរស័ព្ទនេះទេ។');
       } else if (!res.ok || !data.order) {
         setError(data.error || 'រកមិនឃើញការបញ្ជាទិញទេ');
       } else {

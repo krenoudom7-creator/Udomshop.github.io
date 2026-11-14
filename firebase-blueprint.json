@@ -16,7 +16,7 @@
     },
     "Coupon": {
       "title": "Coupon",
-      "description": "Promotional discount code validated on server",
+      "description": "Promotional discount code",
       "type": "object",
       "properties": {
         "code": { "type": "string", "minLength": 2, "maxLength": 32 },
@@ -26,31 +26,35 @@
         "maxUses": { "type": "integer" },
         "usedCount": { "type": "integer" },
         "active": { "type": "boolean" },
+        "expiresAt": { "type": "string", "maxLength": 64 },
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["code", "discountType", "discountValue", "active"]
     },
     "StoreSettings": {
       "title": "StoreSettings",
-      "description": "Shop storefront configuration, ABA bank info, delivery fees, and contact info",
+      "description": "Shop storefront configuration, ABA bank info, Store KHQR images, delivery fees, and contact info",
       "type": "object",
       "properties": {
         "shopName": { "type": "string", "maxLength": 100 },
+        "heroEyebrow": { "type": "string", "maxLength": 140 },
         "heroTitle": { "type": "string", "maxLength": 200 },
         "heroSubtitle": { "type": "string", "maxLength": 400 },
-        "announcementText": { "type": "string", "maxLength": 200 },
+        "announcementText": { "type": "string", "maxLength": 240 },
         "contactPhone": { "type": "string", "maxLength": 60 },
         "contactAddress": { "type": "string", "maxLength": 200 },
+        "telegramContact": { "type": "string", "maxLength": 80 },
         "abaAccountName": { "type": "string", "maxLength": 100 },
         "abaAccountId": { "type": "string", "maxLength": 40 },
         "abaAccountUsd": { "type": "string", "maxLength": 40 },
         "abaAccountKhr": { "type": "string", "maxLength": 40 },
-        "abaQrUsdImage": { "type": "string", "maxLength": 2000 },
-        "abaQrKhrImage": { "type": "string", "maxLength": 2000 },
+        "abaQrUsdImage": { "type": "string", "maxLength": 350000 },
+        "abaQrKhrImage": { "type": "string", "maxLength": 350000 },
         "khrRate": { "type": "integer" },
         "freeShippingThresholdUsd": { "type": "number" },
         "phnomPenhShippingUsd": { "type": "number" },
-        "provinceShippingUsd": { "type": "number" }
+        "provinceShippingUsd": { "type": "number" },
+        "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["shopName", "khrRate", "freeShippingThresholdUsd"]
     },
@@ -70,7 +74,9 @@
           "enum": ["available", "out_of_stock"]
         },
         "description": { "type": "string", "maxLength": 2000 },
-        "imageUrl": { "type": "string", "maxLength": 1000 },
+        "imageUrl": { "type": "string", "maxLength": 350000 },
+        "sizes": { "type": "array" },
+        "colors": { "type": "array" },
         "isNew": { "type": "boolean" },
         "isPopular": { "type": "boolean" },
         "soldCount": { "type": "integer" },
@@ -81,7 +87,7 @@
     },
     "Order": {
       "title": "Order",
-      "description": "Customer purchase order with server-computed totals and ABA PayWay status",
+      "description": "Customer purchase order",
       "type": "object",
       "properties": {
         "orderNumber": { "type": "string", "minLength": 4, "maxLength": 64 },
@@ -90,10 +96,13 @@
         "customerPhone": { "type": "string", "minLength": 6, "maxLength": 32 },
         "shippingAddress": { "type": "string", "minLength": 3, "maxLength": 400 },
         "deliveryZone": { "type": "string", "enum": ["phnom_penh", "province"] },
+        "notes": { "type": "string", "maxLength": 500 },
+        "items": { "type": "array" },
         "subtotalUsd": { "type": "number" },
         "shippingFeeUsd": { "type": "number" },
         "discountUsd": { "type": "number" },
         "couponCode": { "type": "string", "maxLength": 32 },
+        "couponDiscountUsd": { "type": "number" },
         "totalUsd": { "type": "number" },
         "totalKhr": { "type": "integer" },
         "currency": { "type": "string", "enum": ["USD", "KHR"] },
@@ -104,9 +113,11 @@
           "enum": ["pending", "paid", "processing", "shipping", "completed", "cancelled", "failed"]
         },
         "abaTranId": { "type": "string", "maxLength": 64 },
-        "paymentSlipUrl": { "type": "string", "maxLength": 1000 },
+        "abaMode": { "type": "string", "enum": ["live", "direct_qr", "cod", "unconfigured"] },
+        "paymentSlipUrl": { "type": "string", "maxLength": 350000 },
         "paymentReference": { "type": "string", "maxLength": 120 },
         "paymentSubmittedAt": { "type": "string", "format": "date-time" },
+        "telegramNotified": { "type": "boolean" },
         "userId": { "type": "string", "maxLength": 128 },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
@@ -121,6 +132,42 @@
         "paymentStatus",
         "orderStatus"
       ]
+    },
+    "OrderTracking": {
+      "title": "OrderTracking",
+      "description": "Zero-PII order status snapshot keyed by SHA-256 hash of orderNumber and phone",
+      "type": "object",
+      "properties": {
+        "orderId": { "type": "string", "maxLength": 128 },
+        "orderNumber": { "type": "string", "minLength": 4, "maxLength": 64 },
+        "paymentMethod": { "type": "string", "enum": ["bank_qr", "cod", "aba_payway", "aba_khqr"] },
+        "paymentStatus": { "type": "string", "enum": ["pending", "paid", "failed"] },
+        "orderStatus": {
+          "type": "string",
+          "enum": ["pending", "paid", "processing", "shipping", "completed", "cancelled", "failed"]
+        },
+        "totalUsd": { "type": "number" },
+        "totalKhr": { "type": "integer" },
+        "currency": { "type": "string", "enum": ["USD", "KHR"] },
+        "items": { "type": "array" },
+        "paymentSubmittedAt": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["orderId", "orderNumber", "paymentMethod", "paymentStatus", "orderStatus", "totalUsd", "totalKhr"]
+    },
+    "PaymentProof": {
+      "title": "PaymentProof",
+      "description": "Customer submitted payment slip and bank reference",
+      "type": "object",
+      "properties": {
+        "orderId": { "type": "string", "maxLength": 128 },
+        "orderNumber": { "type": "string", "maxLength": 64 },
+        "reference": { "type": "string", "maxLength": 120 },
+        "slipUrl": { "type": "string", "maxLength": 350000 },
+        "submittedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["orderId", "orderNumber", "submittedAt"]
     },
     "Customer": {
       "title": "Customer",
@@ -139,7 +186,7 @@
     },
     "PaymentLog": {
       "title": "PaymentLog",
-      "description": "Server-verified ABA PayWay payment history and callbacks",
+      "description": "Payment verification history",
       "type": "object",
       "properties": {
         "orderId": { "type": "string", "maxLength": 128 },
@@ -167,7 +214,7 @@
     },
     "AdminAccount": {
       "title": "AdminAccount",
-      "description": "Server-managed hashed admin credentials and RBAC",
+      "description": "Server-only hashed admin accounts",
       "type": "object",
       "properties": {
         "username": { "type": "string", "minLength": 3, "maxLength": 64 },
@@ -196,6 +243,8 @@
         "productCount": { "type": "integer" },
         "orderCount": { "type": "integer" },
         "customerCount": { "type": "integer" },
+        "paymentCount": { "type": "integer" },
+        "trigger": { "type": "string", "enum": ["manual", "auto_scheduled"] },
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["createdBy", "productCount", "orderCount"]
@@ -208,11 +257,11 @@
     },
     "/coupons/{couponId}": {
       "schema": { "$ref": "#/entities/Coupon" },
-      "description": "Promotional discount coupons managed by Admin"
+      "description": "Promotional discount coupons managed by Admin; exact code lookup by customers"
     },
     "/settings/{settingId}": {
       "schema": { "$ref": "#/entities/StoreSettings" },
-      "description": "Storefront configuration and shipping rules"
+      "description": "Storefront configuration, shipping rules, and KHQR images"
     },
     "/products/{productId}": {
       "schema": { "$ref": "#/entities/Product" },
@@ -220,7 +269,15 @@
     },
     "/orders/{orderId}": {
       "schema": { "$ref": "#/entities/Order" },
-      "description": "Customer orders containing PII; readable by owner or admin, writable by server/admin"
+      "description": "Customer orders containing PII; creatable at checkout, readable/updatable only by admin or verified owner"
+    },
+    "/order_tracking/{trackingKey}": {
+      "schema": { "$ref": "#/entities/OrderTracking" },
+      "description": "Zero-PII order status lookup keyed by SHA-256 hash of orderNumber and phone"
+    },
+    "/payment_proofs/{proofId}": {
+      "schema": { "$ref": "#/entities/PaymentProof" },
+      "description": "Customer submitted payment slip and reference; readable/updatable only by admin"
     },
     "/customers/{customerId}": {
       "schema": { "$ref": "#/entities/Customer" },
@@ -228,7 +285,7 @@
     },
     "/payments/{paymentId}": {
       "schema": { "$ref": "#/entities/PaymentLog" },
-      "description": "ABA PayWay payment verification records; admin-only access"
+      "description": "Payment verification records; admin-only access"
     },
     "/admin_roles/{uid}": {
       "schema": { "$ref": "#/entities/AdminRole" },
@@ -244,7 +301,7 @@
     },
     "/backups/{backupId}": {
       "schema": { "$ref": "#/entities/DatabaseBackup" },
-      "description": "Periodic database backup records"
+      "description": "Database backup records"
     }
   }
 }

@@ -937,14 +937,9 @@ async function startServer() {
       await ensureInitialDataSeeded();
       const username = String(req.body?.username || '').trim();
       const password = String(req.body?.password || '');
-      const accessCode = String(req.body?.accessCode || '').trim();
 
-      if (!username || !password || !accessCode) {
-        return res.status(400).json({ error: 'សូមបំពេញ Username, Password និង Admin Access Code' });
-      }
-
-      if (accessCode !== ADMIN_ACCESS_CODE) {
-        return res.status(401).json({ error: 'លេខកូដសម្ងាត់ Admin (Access Code) មិនត្រឹមត្រូវទេ' });
+      if (!username || !password) {
+        return res.status(400).json({ error: 'សូមបំពេញ Username និង Password' });
       }
 
       const db = await readDb();
@@ -988,14 +983,9 @@ async function startServer() {
     try {
       await ensureInitialDataSeeded();
       const idToken = String(req.body?.idToken || '').trim();
-      const accessCode = String(req.body?.accessCode || '').trim();
 
-      if (!idToken || !accessCode) {
-        return res.status(400).json({ error: 'សូមផ្ទៀងផ្ទាត់ Google Token និង Admin Access Code' });
-      }
-
-      if (accessCode !== ADMIN_ACCESS_CODE) {
-        return res.status(401).json({ error: 'លេខកូដសម្ងាត់ Admin (Access Code) មិនត្រឹមត្រូវទេ' });
+      if (!idToken) {
+        return res.status(400).json({ error: 'សូមផ្ទៀងផ្ទាត់គណនី Google ជាមុនសិន' });
       }
 
       const decoded = await adminAuth.verifyIdToken(idToken);

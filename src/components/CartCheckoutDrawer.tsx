@@ -39,6 +39,12 @@ import {
   formatMoney,
   getPaymentMethodLabel,
 } from '../utils/format.ts';
+import {
+  compressImageToBoundedDataUrl,
+  createOrderInFirestore,
+  submitPaymentProofInFirestore,
+  validateCouponInFirestore,
+} from '../services/firestoreShop.ts';
 import { SafeImage } from './SafeImage.tsx';
 
 export interface AbaBankInfo {
@@ -199,7 +205,17 @@ export function CartCheckoutDrawer({
         error?: string;
       }>(res);
       if (!data) {
-        setCouponError('មុខងារកូដបញ្ចុះតម្លៃត្រូវការការតភ្ជាប់ Server។');
+        const cloudCheck = await validateCouponInFirestore(code, subtotalUsd);
+        if (!cloudCheck.valid || !cloudCheck.coupon) {
+          setAppliedCoupon(null);
+          setCouponError(cloudCheck.error || 'កូដបញ្ចុះតម្លៃមិនត្រឹមត្រូវទេ');
+        } else {
+          setAppliedCoupon({
+            code: cloudCheck.coupon.code,
+            discountType: cloudCheck.coupon.discountType,
+            discountValue: cloudCheck.coupon.discountValue,
+          });
+        }
       } else if (!res.ok || !data.coupon) {
         setAppliedCoupon(null);
         setCouponError(data.error || 'កូដបញ្ចុះតម្លៃមិនត្រឹមត្រូវទេ');
@@ -253,72 +269,38 @@ export function CartCheckoutDrawer({
       }>(response);
 
       if (!data) {
-        const now = new Date().toISOString();
-        const staticOrderNumber = `ODS-${Date.now().toString().slice(-6)}`;
-        const staticOrder: Order = {
-          id: `static_${Date.now()}`,
-          orderNumber: staticOrderNumber,
-          customerId: 'static_customer',
+        const cloudOrder = await createOrderInFirestore({
           customerName: customerName.trim(),
           customerPhone: customerPhone.trim(),
-          shippingAddress: shippingAddress.trim(),
           deliveryZone,
-          notes: notes.trim() || undefined,
-          items: items.map((item) => {
-            const unitPrice =
-              item.product.discountPriceUsd !== null &&
-              item.product.discountPriceUsd < item.product.priceUsd
-                ? item.product.discountPriceUsd
-                : item.product.priceUsd;
-            return {
-              productId: item.product.id,
-              sku: item.product.sku,
-              name: item.product.name,
-              imageUrl: item.product.imageUrl,
-              quantity: item.quantity,
-              unitPriceUsd: unitPrice,
-              originalPriceUsd: item.product.priceUsd,
-              lineTotalUsd: Number((unitPrice * item.quantity).toFixed(2)),
-              selectedSize: item.selectedSize,
-              selectedColor: item.selectedColor,
-            };
-          }),
-          subtotalUsd: Number(subtotalUsd.toFixed(2)),
-          shippingFeeUsd: Number(shippingFeeUsd.toFixed(2)),
-          discountUsd: Number((discountSavingsUsd + couponDiscountUsd).toFixed(2)),
-          totalUsd: Number(totalUsd.toFixed(2)),
-          totalKhr: Math.round(totalUsd * khrRate),
+          shippingAddress: shippingAddress.trim(),
+          couponCode: appliedCoupon?.code,
+          notes: notes.trim(),
           currency,
           paymentMethod,
-          paymentStatus: 'pending',
-          orderStatus: 'pending',
-          abaTranId: staticOrderNumber,
-          abaMode:
-            paymentMethod === 'cod'
-              ? 'cod'
-              : paymentMethod === 'bank_qr'
-              ? 'direct_qr'
-              : 'unconfigured',
-          telegramNotified: false,
-          createdAt: now,
-          updatedAt: now,
-        };
+          items: items.map((item) => ({
+            productId: item.product.id,
+            quantity: item.quantity,
+            selectedSize: item.selectedSize,
+            selectedColor: item.selectedColor,
+          })),
+        });
 
         try {
           const prevRaw = localStorage.getItem('oudom_static_orders');
           const prevList = prevRaw ? (JSON.parse(prevRaw) as Order[]) : [];
           localStorage.setItem(
             'oudom_static_orders',
-            JSON.stringify([staticOrder, ...prevList].slice(0, 20))
+            JSON.stringify([cloudOrder, ...prevList].slice(0, 20))
           );
         } catch {
           // Ignore storage quota errors
         }
 
-        setCreatedOrder(staticOrder);
+        setCreatedOrder(cloudOrder);
         if (paymentMethod === 'aba_payway' || paymentMethod === 'aba_khqr') {
           setAbaNotice(
-            'កំពុងដំណើរការលើ GitHub Pages Static៖ មិនអាចបង្កើត ABA PayWay API បានទេ។ សូមផ្ទេរប្រាក់ផ្ទាល់តាមគណនី ABA ខាងក្រោម។'
+            'សូមស្កេន Store KHQR ឬផ្ទេរប្រាក់តាមគណនី ABA ខាងក្រោម រួចផ្ញើរូបភាពវិក្កយបត្រដើម្បីបញ្ជាក់ការបង់ប្រាក់។'
           );
         }
         setStep('payment');
@@ -395,8 +377,11 @@ export function CartCheckoutDrawer({
     if (!file) return;
     setTransferNoteSent('');
     try {
-      const optimized = await compressImageToWebP(file, 900);
-      const dataUrl = await fileToDataUrl(optimized);
+      const optimized = await compressImageToWebP(file, 800);
+      const dataUrl =
+        optimized.size > 220000
+          ? await compressImageToBoundedDataUrl(file, 760, 300000)
+          : await fileToDataUrl(optimized);
       setSlipDataUrl(dataUrl);
     } catch {
       setTransferNoteSent('មិនអាចអានរូបភាពវិក្កយបត្រនេះបានទេ សូមសាកល្បងរូបភាពផ្សេង។');
@@ -422,7 +407,22 @@ export function CartCheckoutDrawer({
       });
       const data = await safeReadJson<{ order?: Order; message?: string; error?: string }>(res);
       if (!data) {
-        setTransferNoteSent('មិនអាចភ្ជាប់ទៅ Server បានទេ។');
+        await submitPaymentProofInFirestore({
+          orderId: createdOrder.id,
+          orderNumber: createdOrder.orderNumber,
+          reference: transferRef.trim(),
+          slipUrl: slipDataUrl || undefined,
+        });
+        setCreatedOrder({
+          ...createdOrder,
+          paymentReference: transferRef.trim() || createdOrder.paymentReference,
+          paymentSlipUrl: slipDataUrl || createdOrder.paymentSlipUrl,
+          paymentSubmittedAt: new Date().toISOString(),
+        });
+        setSlipDataUrl('');
+        setTransferNoteSent(
+          'បានផ្ញើភស្តុតាងបង់ប្រាក់ទៅហាងរួចរាល់! ម្ចាស់ហាងនឹងពិនិត្យ និងបញ្ជាក់ក្នុង Admin Dashboard ភ្លាមៗ។'
+        );
         return;
       }
       if (!res.ok) {

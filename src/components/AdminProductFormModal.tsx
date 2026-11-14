@@ -3,6 +3,11 @@ import { Camera, ImagePlus, Loader2, Plus, X } from 'lucide-react';
 import type { Category, Product, ProductCategory, ProductStatus } from '../types/shop.ts';
 import { apiUrl, safeReadJson } from '../utils/api.ts';
 import { compressImageToWebP } from '../utils/format.ts';
+import {
+  compressImageToBoundedDataUrl,
+  createCategoryInFirestore,
+  upsertProductInFirestore,
+} from '../services/firestoreShop.ts';
 import { SafeImage } from './SafeImage.tsx';
 
 interface AdminProductFormModalProps {
@@ -10,6 +15,7 @@ interface AdminProductFormModalProps {
   editingProduct: Product | null;
   categories: Category[];
   authToken: string | null;
+  cloudMode?: boolean;
   onClose: () => void;
   onSaved: () => void;
   onCategoryCreated: (category: Category) => void;
@@ -20,6 +26,7 @@ export function AdminProductFormModal({
   editingProduct,
   categories,
   authToken,
+  cloudMode = false,
   onClose,
   onSaved,
   onCategoryCreated,
@@ -76,6 +83,20 @@ export function AdminProductFormModal({
     setError('');
     setCreatingCat(true);
     try {
+      if (cloudMode) {
+        const created = await createCategoryInFirestore(
+          newCatNameKm.trim(),
+          newCatNameEn.trim(),
+          categories.length
+        );
+        onCategoryCreated(created);
+        setCategory(created.slug);
+        setNewCatNameKm('');
+        setNewCatNameEn('');
+        setAddingCategory(false);
+        return;
+      }
+
       const res = await fetch(apiUrl('/api/admin/categories'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders },
@@ -86,8 +107,19 @@ export function AdminProductFormModal({
         }),
       });
       const data = await safeReadJson<{ category?: Category; error?: string }>(res);
-      if (!data || !res.ok || !data.category) {
-        setError(data?.error || 'មិនអាចបន្ថែមប្រភេទទំនិញថ្មីបានទេ');
+      if (!data) {
+        const created = await createCategoryInFirestore(
+          newCatNameKm.trim(),
+          newCatNameEn.trim(),
+          categories.length
+        );
+        onCategoryCreated(created);
+        setCategory(created.slug);
+        setNewCatNameKm('');
+        setNewCatNameEn('');
+        setAddingCategory(false);
+      } else if (!res.ok || !data.category) {
+        setError(data.error || 'មិនអាចបន្ថែមប្រភេទទំនិញថ្មីបានទេ');
       } else {
         onCategoryCreated(data.category);
         setCategory(data.category.slug);
@@ -109,6 +141,12 @@ export function AdminProductFormModal({
     setError('');
     setUploading(true);
     try {
+      if (cloudMode) {
+        const dataUrl = await compressImageToBoundedDataUrl(file, 760, 320000);
+        setImageUrl(dataUrl);
+        return;
+      }
+
       const optimized = await compressImageToWebP(file);
       const formData = new FormData();
       formData.append('image', optimized);
@@ -121,8 +159,11 @@ export function AdminProductFormModal({
       });
 
       const data = await safeReadJson<{ imageUrl?: string; error?: string }>(res);
-      if (!data || !res.ok || !data.imageUrl) {
-        setError(data?.error || 'មិនអាច Upload រូបភាពបានទេ');
+      if (!data) {
+        const dataUrl = await compressImageToBoundedDataUrl(file, 760, 320000);
+        setImageUrl(dataUrl);
+      } else if (!res.ok || !data.imageUrl) {
+        setError(data.error || 'មិនអាច Upload រូបភាពបានទេ');
       } else {
         setImageUrl(data.imageUrl);
       }
@@ -161,6 +202,13 @@ export function AdminProductFormModal({
         isPopular,
       };
 
+      if (cloudMode) {
+        await upsertProductInFirestore(payload, editingProduct);
+        onSaved();
+        onClose();
+        return;
+      }
+
       const url = editingProduct
         ? apiUrl(`/api/admin/products/${editingProduct.id}`)
         : apiUrl('/api/admin/products');
@@ -177,15 +225,21 @@ export function AdminProductFormModal({
       });
 
       const data = await safeReadJson<{ error?: string }>(res);
-      if (!data || !res.ok) {
-        setError(data?.error || 'មិនអាចរក្សាទុកផលិតផលបានទេ');
+      if (!data) {
+        await upsertProductInFirestore(payload, editingProduct);
+        onSaved();
+        onClose();
+        return;
+      }
+      if (!res.ok) {
+        setError(data.error || 'មិនអាចរក្សាទុកផលិតផលបានទេ');
         return;
       }
 
       onSaved();
       onClose();
     } catch {
-      setError('មានបញ្ហាក្នុងការភ្ជាប់ទៅ Server');
+      setError('មានបញ្ហាក្នុងការរក្សាទុកផលិតផល');
     } finally {
       setSaving(false);
     }
