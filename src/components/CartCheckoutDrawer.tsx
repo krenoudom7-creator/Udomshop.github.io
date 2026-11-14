@@ -105,6 +105,7 @@ export function CartCheckoutDrawer({
   const [locationLat, setLocationLat] = useState<number | undefined>(undefined);
   const [locationLng, setLocationLng] = useState<number | undefined>(undefined);
   const [locationMapUrl, setLocationMapUrl] = useState<string | undefined>(undefined);
+  const [locationImageUrl, setLocationImageUrl] = useState<string | undefined>(undefined);
   const [notes, setNotes] = useState('');
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('bank_qr');
   const [qrCurrency, setQrCurrency] = useState<CurrencyCode>(currency);
@@ -260,6 +261,7 @@ export function CartCheckoutDrawer({
           ...(locationLat !== undefined ? { locationLat } : {}),
           ...(locationLng !== undefined ? { locationLng } : {}),
           ...(locationMapUrl ? { locationMapUrl } : {}),
+          ...(locationImageUrl ? { locationImageUrl } : {}),
           couponCode: appliedCoupon?.code,
           notes: notes.trim(),
           currency,
@@ -288,6 +290,7 @@ export function CartCheckoutDrawer({
           locationLat,
           locationLng,
           locationMapUrl,
+          locationImageUrl,
           couponCode: appliedCoupon?.code,
           notes: notes.trim(),
           currency,
@@ -324,6 +327,7 @@ export function CartCheckoutDrawer({
         setLocationLat(undefined);
         setLocationLng(undefined);
         setLocationMapUrl(undefined);
+        setLocationImageUrl(undefined);
         onClearCart();
         return;
       }
@@ -344,6 +348,7 @@ export function CartCheckoutDrawer({
       setLocationLat(undefined);
       setLocationLng(undefined);
       setLocationMapUrl(undefined);
+      setLocationImageUrl(undefined);
       onClearCart();
     } catch {
       setError('ការតភ្ជាប់មានបញ្ហា។ សូមព្យាយាមម្តងទៀត។');
@@ -793,10 +798,12 @@ export function CartCheckoutDrawer({
                 lat={locationLat}
                 lng={locationLng}
                 mapUrl={locationMapUrl}
+                imageUrl={locationImageUrl}
                 onChange={(loc) => {
                   setLocationLat(loc.lat);
                   setLocationLng(loc.lng);
                   setLocationMapUrl(loc.mapUrl);
+                  setLocationImageUrl(loc.imageUrl);
                   if (loc.suggestedAddress && shippingAddress.trim().length < 5) {
                     setShippingAddress(loc.suggestedAddress);
                   }
@@ -972,6 +979,18 @@ export function CartCheckoutDrawer({
                         </span>
                       )}
                     </p>
+                  )}
+                  {createdOrder.locationImageUrl && (
+                    <div className="flex items-center gap-2.5 rounded-xl border border-[#E2DDD3] bg-white p-2 mt-1">
+                      <img
+                        src={createdOrder.locationImageUrl}
+                        alt="រូបភាពទីតាំងដឹកជញ្ជូន"
+                        className="h-12 w-12 rounded-lg object-cover border border-[#ECE8DF] shrink-0"
+                      />
+                      <span className="text-[11px] font-medium text-[#4A463E]">
+                        បានភ្ជាប់រូបភាពទីតាំងសម្រាប់ងាយស្រួលស្វែងរក
+                      </span>
+                    </div>
                   )}
                   <p>វិធីទូទាត់៖ <b className="text-[#111111]">{getPaymentMethodLabel(createdOrder.paymentMethod)}</b></p>
                 </div>

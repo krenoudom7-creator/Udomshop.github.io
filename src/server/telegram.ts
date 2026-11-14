@@ -113,6 +113,9 @@ export async function sendOrderTelegramNotification(
           )}`,
         ]
       : []),
+    ...(order.locationImageUrl
+      ? ['• <b>រូបភាពទីតាំង:</b> បានភ្ជាប់រួចរាល់ (មើលក្នុង Admin Dashboard)']
+      : []),
     '',
     `<b>មុខទំនិញ:</b>`,
     itemLines,

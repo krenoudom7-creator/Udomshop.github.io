@@ -82,7 +82,7 @@ service cloud.firestore {
       return data.keys().hasAll(['shopName', 'khrRate', 'freeShippingThresholdUsd']) &&
         data.keys().hasOnly([
           'shopName', 'heroEyebrow', 'heroTitle', 'heroSubtitle', 'announcementText',
-          'contactPhone', 'contactAddress', 'contactLat', 'contactLng', 'contactMapUrl', 'telegramContact',
+          'contactPhone', 'contactAddress', 'contactLat', 'contactLng', 'contactMapUrl', 'contactMapImageUrl', 'telegramContact',
           'abaAccountName', 'abaAccountId', 'abaAccountUsd', 'abaAccountKhr',
           'abaQrUsdImage', 'abaQrKhrImage',
           'khrRate', 'freeShippingThresholdUsd', 'phnomPenhShippingUsd', 'provinceShippingUsd', 'updatedAt'
@@ -99,6 +99,7 @@ service cloud.firestore {
         (!('contactLat' in data) || (data.contactLat is number && data.contactLat >= -90 && data.contactLat <= 90)) &&
         (!('contactLng' in data) || (data.contactLng is number && data.contactLng >= -180 && data.contactLng <= 180)) &&
         (!('contactMapUrl' in data) || (data.contactMapUrl is string && data.contactMapUrl.size() <= 400)) &&
+        (!('contactMapImageUrl' in data) || (data.contactMapImageUrl is string && data.contactMapImageUrl.size() <= 350000)) &&
         (!('telegramContact' in data) || (data.telegramContact is string && data.telegramContact.size() <= 80)) &&
         (!('abaAccountName' in data) || (data.abaAccountName is string && data.abaAccountName.size() <= 100)) &&
         (!('abaAccountId' in data) || (data.abaAccountId is string && data.abaAccountId.size() <= 40)) &&
@@ -136,7 +137,7 @@ service cloud.firestore {
         ]) &&
         data.keys().hasOnly([
           'orderNumber', 'customerId', 'customerName', 'customerPhone', 'shippingAddress',
-          'locationLat', 'locationLng', 'locationMapUrl',
+          'locationLat', 'locationLng', 'locationMapUrl', 'locationImageUrl',
           'deliveryZone', 'notes', 'items', 'subtotalUsd', 'shippingFeeUsd', 'discountUsd',
           'couponCode', 'couponDiscountUsd', 'totalUsd', 'totalKhr', 'currency',
           'paymentMethod', 'paymentStatus', 'orderStatus', 'abaTranId', 'abaMode',
@@ -152,6 +153,7 @@ service cloud.firestore {
         (!('locationLat' in data) || (data.locationLat is number && data.locationLat >= -90 && data.locationLat <= 90)) &&
         (!('locationLng' in data) || (data.locationLng is number && data.locationLng >= -180 && data.locationLng <= 180)) &&
         (!('locationMapUrl' in data) || (data.locationMapUrl is string && data.locationMapUrl.size() <= 400)) &&
+        (!('locationImageUrl' in data) || (data.locationImageUrl is string && data.locationImageUrl.size() <= 350000)) &&
         data.deliveryZone in ['phnom_penh', 'province'] &&
         (!('notes' in data) || (data.notes is string && data.notes.size() <= 500)) &&
         data.items is list && data.items.size() >= 1 && data.items.size() <= 50 && data.items[0] is map &&
@@ -254,7 +256,7 @@ service cloud.firestore {
       allow update: if isAdmin() && isValidId(settingId) && isValidStoreSettings(incoming()) &&
         incoming().diff(existing()).affectedKeys().hasOnly([
           'shopName', 'heroEyebrow', 'heroTitle', 'heroSubtitle', 'announcementText',
-          'contactPhone', 'contactAddress', 'contactLat', 'contactLng', 'contactMapUrl', 'telegramContact',
+          'contactPhone', 'contactAddress', 'contactLat', 'contactLng', 'contactMapUrl', 'contactMapImageUrl', 'telegramContact',
           'abaAccountName', 'abaAccountId', 'abaAccountUsd', 'abaAccountKhr',
           'abaQrUsdImage', 'abaQrKhrImage',
           'khrRate', 'freeShippingThresholdUsd', 'phnomPenhShippingUsd', 'provinceShippingUsd', 'updatedAt'

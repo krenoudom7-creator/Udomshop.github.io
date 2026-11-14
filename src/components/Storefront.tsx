@@ -86,6 +86,7 @@ export function Storefront({ onNavigateAdmin }: StorefrontProps) {
   });
 
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [storePhotoOpen, setStorePhotoOpen] = useState(false);
   const [activeProduct, setActiveProduct] = useState<Product | null>(null);
   const [trackerOpen, setTrackerOpen] = useState(false);
   const [orderHistoryCount, setOrderHistoryCount] = useState<number>(
@@ -908,21 +909,37 @@ export function Storefront({ onNavigateAdmin }: StorefrontProps) {
                 <MapPin className="h-4 w-4 text-[#C9A227] shrink-0 mt-0.5" />
                 <div>
                   <p>{settings?.contactAddress || 'រាជធានីភ្នំពេញ ព្រះរាជាណាចក្រកម្ពុជា'}</p>
-                  {(settings?.contactMapUrl ||
-                    (settings?.contactLat != null && settings?.contactLng != null)) && (
-                    <a
-                      href={
-                        settings.contactMapUrl ||
-                        buildGoogleMapsUrl(settings.contactLat!, settings.contactLng!)
-                      }
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="mt-1 inline-flex items-center gap-1 text-[11px] font-semibold text-[#C9A227] hover:underline"
-                    >
-                      <span>មើលទីតាំងហាងលើ Google Maps</span>
-                      <ExternalLink className="h-3 w-3" />
-                    </a>
-                  )}
+                  <div className="mt-1.5 flex flex-wrap items-center gap-2.5">
+                    {(settings?.contactMapUrl ||
+                      (settings?.contactLat != null && settings?.contactLng != null)) && (
+                      <a
+                        href={
+                          settings.contactMapUrl ||
+                          buildGoogleMapsUrl(settings.contactLat!, settings.contactLng!)
+                        }
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#C9A227] hover:underline"
+                      >
+                        <span>មើលទីតាំងហាងលើ Google Maps</span>
+                        <ExternalLink className="h-3 w-3" />
+                      </a>
+                    )}
+                    {settings?.contactMapImageUrl && (
+                      <button
+                        type="button"
+                        onClick={() => setStorePhotoOpen(true)}
+                        className="inline-flex items-center gap-1.5 rounded-md border border-white/20 bg-white/5 px-2 py-1 text-[11px] font-medium text-white hover:border-[#C9A227] hover:text-[#C9A227]"
+                      >
+                        <SafeImage
+                          src={settings.contactMapImageUrl}
+                          alt="រូបភាពទីតាំងហាង"
+                          className="h-4 w-4 rounded object-cover"
+                        />
+                        <span>រូបភាពទីតាំងហាង</span>
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
               <p className="flex items-center gap-2">
@@ -1001,6 +1018,59 @@ export function Storefront({ onNavigateAdmin }: StorefrontProps) {
         khrRate={khrRate}
         onClose={() => setTrackerOpen(false)}
       />
+
+      {storePhotoOpen && settings?.contactMapImageUrl && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4"
+          onClick={() => setStorePhotoOpen(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-label="រូបភាពទីតាំងហាង"
+        >
+          <div
+            className="w-full max-w-md rounded-2xl bg-white p-4 shadow-2xl space-y-3"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-[#ECE8DF] pb-2">
+              <div className="flex items-center gap-1.5 text-sm font-bold text-[#111111]">
+                <MapPin className="h-4 w-4 text-[#B8860B]" />
+                <span>រូបភាពទីតាំងហាង</span>
+              </div>
+              <button
+                type="button"
+                aria-label="បិទ"
+                onClick={() => setStorePhotoOpen(false)}
+                className="flex h-8 w-8 items-center justify-center rounded-full hover:bg-[#FAF9F6]"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <p className="text-xs text-[#6B6559]">{settings.contactAddress}</p>
+            <div className="max-h-[65vh] overflow-auto rounded-xl border border-[#E2DDD3] bg-[#FAF9F6] p-2">
+              <SafeImage
+                src={settings.contactMapImageUrl}
+                alt="រូបភាពទីតាំងហាង"
+                className="mx-auto h-auto max-w-full rounded-lg object-contain"
+              />
+            </div>
+            {(settings.contactMapUrl ||
+              (settings.contactLat != null && settings.contactLng != null)) && (
+              <a
+                href={
+                  settings.contactMapUrl ||
+                  buildGoogleMapsUrl(settings.contactLat!, settings.contactLng!)
+                }
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex h-10 w-full items-center justify-center gap-1.5 rounded-xl bg-[#111111] text-xs font-semibold text-white hover:bg-[#262626]"
+              >
+                <span>បើកមើលលើ Google Maps</span>
+                <ExternalLink className="h-3.5 w-3.5" />
+              </a>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

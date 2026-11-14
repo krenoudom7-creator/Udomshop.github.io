@@ -55,6 +55,7 @@ export interface StoreSettings {
   contactLat?: number;
   contactLng?: number;
   contactMapUrl?: string;
+  contactMapImageUrl?: string;
   telegramContact: string;
   abaAccountName: string;
   abaAccountId: string;
@@ -119,6 +120,7 @@ export interface Order {
   locationLat?: number;
   locationLng?: number;
   locationMapUrl?: string;
+  locationImageUrl?: string;
   deliveryZone: DeliveryZone;
   notes?: string;
   items: OrderItem[];

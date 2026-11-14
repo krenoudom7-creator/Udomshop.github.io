@@ -441,6 +441,7 @@ async function startServer() {
         locationLat?: number;
         locationLng?: number;
         locationMapUrl?: string;
+        locationImageUrl?: string;
         deliveryZone?: DeliveryZone;
         couponCode?: string;
         notes?: string;
@@ -477,6 +478,16 @@ async function startServer() {
         (locationLat !== undefined && locationLng !== undefined
           ? `https://www.google.com/maps?q=${locationLat},${locationLng}`
           : undefined);
+      const rawLocationImage =
+        typeof body.locationImageUrl === 'string' ? body.locationImageUrl.trim() : '';
+      const locationImageUrl =
+        rawLocationImage &&
+        rawLocationImage.length <= 350000 &&
+        /^(?:data:image\/(?:jpeg|jpg|png|webp|avif);base64,|\/api\/media\/|https:\/\/)/i.test(
+          rawLocationImage
+        )
+          ? rawLocationImage
+          : undefined;
       const deliveryZone: DeliveryZone =
         body.deliveryZone === 'province' ? 'province' : 'phnom_penh';
       const notes = String(body.notes || '').trim().slice(0, 300);
@@ -651,6 +662,7 @@ async function startServer() {
           ...(locationLat !== undefined ? { locationLat } : {}),
           ...(locationLng !== undefined ? { locationLng } : {}),
           ...(locationMapUrl ? { locationMapUrl } : {}),
+          ...(locationImageUrl ? { locationImageUrl } : {}),
           deliveryZone,
           notes,
           items: orderItems,
@@ -1543,6 +1555,17 @@ async function startServer() {
                     String(b.contactMapUrl || '').trim()
                   )
                 ? String(b.contactMapUrl || '').trim().slice(0, 400)
+                : undefined,
+            contactMapImageUrl:
+              b.contactMapImageUrl === undefined
+                ? state.settings.contactMapImageUrl
+                : typeof b.contactMapImageUrl === 'string' &&
+                  b.contactMapImageUrl.trim().length > 0 &&
+                  b.contactMapImageUrl.trim().length <= 350000 &&
+                  /^(?:data:image\/(?:jpeg|jpg|png|webp|avif);base64,|\/api\/media\/|https:\/\/)/i.test(
+                    b.contactMapImageUrl.trim()
+                  )
+                ? b.contactMapImageUrl.trim()
                 : undefined,
             telegramContact: b.telegramContact !== undefined ? String(b.telegramContact).trim() : state.settings.telegramContact,
             abaAccountName: b.abaAccountName !== undefined ? String(b.abaAccountName).trim() : state.settings.abaAccountName,

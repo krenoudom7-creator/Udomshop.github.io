@@ -357,6 +357,12 @@ function sanitizeSettingsDoc(s: StoreSettings): Record<string, unknown> {
       typeof s.contactMapUrl === 'string' && s.contactMapUrl.trim()
         ? s.contactMapUrl.trim().slice(0, 400)
         : undefined,
+    contactMapImageUrl:
+      typeof s.contactMapImageUrl === 'string' &&
+      s.contactMapImageUrl.trim() &&
+      s.contactMapImageUrl.trim().length <= 350000
+        ? s.contactMapImageUrl.trim()
+        : undefined,
     telegramContact: String(s.telegramContact || ''),
     abaAccountName: String(s.abaAccountName || ''),
     abaAccountId: String(s.abaAccountId || ''),
@@ -486,6 +492,7 @@ export async function createOrderInFirestore(input: {
   locationLat?: number;
   locationLng?: number;
   locationMapUrl?: string;
+  locationImageUrl?: string;
   couponCode?: string;
   notes?: string;
   currency: CurrencyCode;
@@ -593,6 +600,13 @@ export async function createOrderInFirestore(input: {
       ? `https://www.google.com/maps?q=${cleanLat},${cleanLng}`
       : undefined;
 
+  const cleanLocationImage =
+    typeof input.locationImageUrl === 'string' &&
+    input.locationImageUrl.trim() &&
+    input.locationImageUrl.trim().length <= 350000
+      ? input.locationImageUrl.trim()
+      : undefined;
+
   const orderPayload: Record<string, unknown> = stripUndefined({
     orderNumber,
     customerId: `cust_${input.customerPhone.replace(/\D/g, '') || suffix}`,
@@ -602,6 +616,7 @@ export async function createOrderInFirestore(input: {
     locationLat: cleanLat,
     locationLng: cleanLng,
     locationMapUrl: cleanMapUrl,
+    locationImageUrl: cleanLocationImage,
     deliveryZone: input.deliveryZone,
     notes: input.notes?.trim() || undefined,
     items: orderItems,

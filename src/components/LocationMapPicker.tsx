@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ChangeEvent } from 'react';
 import {
   AdvancedMarker,
   APIProvider,
@@ -12,6 +12,7 @@ import {
   type MapMouseEvent,
 } from '@vis.gl/react-google-maps';
 import {
+  Camera,
   Crosshair,
   ExternalLink,
   Link2,
@@ -21,6 +22,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { apiUrl, safeReadJson } from '../utils/api.ts';
+import { compressImageToBoundedDataUrl } from '../services/firestoreShop.ts';
 import {
   buildGoogleMapsUrl,
   getGoogleMapsApiKey,
@@ -34,6 +36,7 @@ export interface SelectedMapLocation {
   lat?: number;
   lng?: number;
   mapUrl?: string;
+  imageUrl?: string;
   suggestedAddress?: string;
 }
 
@@ -43,6 +46,7 @@ interface LocationMapPickerProps {
   lat?: number;
   lng?: number;
   mapUrl?: string;
+  imageUrl?: string;
   onChange: (next: SelectedMapLocation) => void;
   mapHeightClass?: string;
 }
@@ -315,10 +319,11 @@ function InteractiveMapCanvas({
 
 export function LocationMapPicker({
   label = 'ដាក់ទីតាំងលើផែនទី (Map Location - ជាជម្រើស)',
-  helperText = 'ស្វែងរកទីតាំង ចុចលើផែនទី ប្រើ GPS ឬបិទភ្ជាប់ Link Google Maps ដើម្បីងាយស្រួលដឹកជញ្ជូនដល់កន្លែង។',
+  helperText = 'ស្វែងរកទីតាំង ចុចលើផែនទី ប្រើ GPS បិទភ្ជាប់ Link ឬដាក់រូបភាពទីតាំង ដើម្បីងាយស្រួលស្វែងរក។',
   lat,
   lng,
   mapUrl,
+  imageUrl,
   onChange,
   mapHeightClass = 'h-56 sm:h-60',
 }: LocationMapPickerProps) {
@@ -326,6 +331,8 @@ export function LocationMapPicker({
   const [mapLoadFailed, setMapLoadFailed] = useState(false);
   const [locatingGps, setLocatingGps] = useState(false);
   const [gpsError, setGpsError] = useState('');
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [photoError, setPhotoError] = useState('');
   const [showLinkInput, setShowLinkInput] = useState(false);
   const [linkDraft, setLinkDraft] = useState(mapUrl || '');
 
@@ -352,6 +359,16 @@ export function LocationMapPicker({
     };
   }, [apiKey]);
 
+  const emitWithCurrentImage = useCallback(
+    (next: SelectedMapLocation) => {
+      onChange({
+        ...next,
+        imageUrl: next.imageUrl !== undefined ? next.imageUrl : imageUrl,
+      });
+    },
+    [onChange, imageUrl]
+  );
+
   const handleUseGps = () => {
     setGpsError('');
     if (typeof navigator === 'undefined' || !navigator.geolocation) {
@@ -364,7 +381,7 @@ export function LocationMapPicker({
         const pickedLat = Number(pos.coords.latitude.toFixed(6));
         const pickedLng = Number(pos.coords.longitude.toFixed(6));
         const nextUrl = buildGoogleMapsUrl(pickedLat, pickedLng);
-        onChange({
+        emitWithCurrentImage({
           lat: pickedLat,
           lng: pickedLng,
           mapUrl: nextUrl,
@@ -383,19 +400,19 @@ export function LocationMapPicker({
     setLinkDraft(rawValue);
     const trimmed = rawValue.trim();
     if (!trimmed) {
-      onChange({ lat: undefined, lng: undefined, mapUrl: undefined });
+      emitWithCurrentImage({ lat: undefined, lng: undefined, mapUrl: undefined });
       return;
     }
     const parsed = parseLatLngFromTextOrUrl(trimmed);
     const safeUrl = sanitizeMapUrl(trimmed);
     if (parsed) {
-      onChange({
+      emitWithCurrentImage({
         lat: parsed.lat,
         lng: parsed.lng,
         mapUrl: safeUrl || buildGoogleMapsUrl(parsed.lat, parsed.lng),
       });
     } else if (safeUrl) {
-      onChange({
+      emitWithCurrentImage({
         lat: undefined,
         lng: undefined,
         mapUrl: safeUrl,
@@ -403,10 +420,42 @@ export function LocationMapPicker({
     }
   };
 
+  const handleLocationPhotoChange = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setPhotoError('');
+    setUploadingPhoto(true);
+    try {
+      const dataUrl = await compressImageToBoundedDataUrl(file, 760, 240000);
+      onChange({
+        lat,
+        lng,
+        mapUrl,
+        imageUrl: dataUrl,
+      });
+    } catch {
+      setPhotoError('មិនអាចអានរូបភាពទីតាំងនេះបានទេ សូមសាកល្បងរូបភាពផ្សេង។');
+    } finally {
+      setUploadingPhoto(false);
+    }
+  };
+
+  const handleClearPhoto = () => {
+    setPhotoError('');
+    onChange({
+      lat,
+      lng,
+      mapUrl,
+      imageUrl: undefined,
+    });
+  };
+
   const handleClear = () => {
     setLinkDraft('');
     setGpsError('');
-    onChange({ lat: undefined, lng: undefined, mapUrl: undefined });
+    setPhotoError('');
+    onChange({ lat: undefined, lng: undefined, mapUrl: undefined, imageUrl: undefined });
   };
 
   const hasValidCoords = isValidLatLng(lat, lng);
@@ -449,7 +498,23 @@ export function LocationMapPicker({
             <span>ដាក់ Link Map</span>
           </button>
 
-          {(hasValidCoords || resolvedMapUrl) && (
+          <label className="flex h-8 cursor-pointer items-center gap-1 rounded-lg border border-[#E2DDD3] bg-white px-2.5 text-[11px] font-semibold text-[#111111] hover:border-[#111111]">
+            {uploadingPhoto ? (
+              <Loader2 className="h-3 w-3 animate-spin text-[#B8860B]" />
+            ) : (
+              <Camera className="h-3 w-3 text-[#B8860B]" />
+            )}
+            <span>{uploadingPhoto ? 'កំពុងភ្ជាប់...' : 'ដាក់រូបភាពទីតាំង'}</span>
+            <input
+              type="file"
+              accept="image/*"
+              disabled={uploadingPhoto}
+              onChange={(e) => void handleLocationPhotoChange(e)}
+              className="hidden"
+            />
+          </label>
+
+          {(hasValidCoords || resolvedMapUrl || imageUrl) && (
             <button
               type="button"
               onClick={handleClear}
@@ -481,6 +546,7 @@ export function LocationMapPicker({
       )}
 
       {gpsError && <p className="text-[11px] text-red-700">{gpsError}</p>}
+      {photoError && <p className="text-[11px] text-red-700">{photoError}</p>}
 
       {apiKey && !mapLoadFailed ? (
         <APIProvider
@@ -493,7 +559,7 @@ export function LocationMapPicker({
             lat={lat}
             lng={lng}
             mapHeightClass={mapHeightClass}
-            onSelectLocation={onChange}
+            onSelectLocation={emitWithCurrentImage}
             onQuotaOrAuthError={() => setMapLoadFailed(true)}
           />
         </APIProvider>
@@ -501,9 +567,36 @@ export function LocationMapPicker({
         <div className="rounded-xl border border-dashed border-[#D8D1C3] bg-white p-3.5 text-[11px] text-[#6B6559] space-y-2">
           <p>
             ផែនទីអន្តរកម្មត្រូវការ Google Maps API Key ឬអ្នកអាចចុច{' '}
-            <b className="text-[#111111]">«ទីតាំង GPS ខ្ញុំ»</b> ឬ{' '}
-            <b className="text-[#111111]">«ដាក់ Link Map»</b> ខាងលើដើម្បីភ្ជាប់ទីតាំង Google Maps បានដូចគ្នា។
+            <b className="text-[#111111]">«ទីតាំង GPS ខ្ញុំ»</b>{' '}
+            <b className="text-[#111111]">«ដាក់ Link Map»</b> ឬ{' '}
+            <b className="text-[#111111]">«ដាក់រូបភាពទីតាំង»</b> ខាងលើដើម្បីងាយស្រួលស្វែងរកទីតាំង។
           </p>
+        </div>
+      )}
+
+      {imageUrl && (
+        <div className="flex items-center gap-3 rounded-xl border border-[#E2DDD3] bg-white p-2.5">
+          <img
+            src={imageUrl}
+            alt="រូបភាពទីតាំង"
+            className="h-16 w-16 shrink-0 rounded-lg border border-[#ECE8DF] object-cover"
+          />
+          <div className="min-w-0 flex-1 space-y-0.5 text-[11px]">
+            <p className="font-semibold text-[#111111]">
+              រូបភាពទីតាំង (សម្រាប់ងាយស្រួលស្វែងរក)
+            </p>
+            <p className="text-[#6B6559]">
+              បានភ្ជាប់រូបភាពទីតាំង / ផ្ទះ / ផ្លាកសញ្ញាសម្គាល់រួចរាល់
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handleClearPhoto}
+            className="flex h-8 shrink-0 items-center gap-1 rounded-lg border border-red-200 px-2.5 text-[11px] font-medium text-red-700 hover:bg-red-50"
+          >
+            <Trash2 className="h-3 w-3" />
+            <span>លុបរូប</span>
+          </button>
         </div>
       )}
 
