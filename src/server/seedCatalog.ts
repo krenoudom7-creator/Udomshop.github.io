@@ -118,16 +118,31 @@ export async function ensureInitialDataSeeded(): Promise<void> {
   bootstrapped = true;
 
   const state = await readDb();
+  const envUsername = process.env.ADMIN_USERNAME?.trim();
+  const envPassword = process.env.ADMIN_PASSWORD?.trim();
+  const targetUsername = envUsername || 'oudom_admin';
+  const targetPassword = envPassword || 'OudomShop@2026';
+
+  const existingDefaultAdmin = state.admin_accounts.find(
+    (a) => a.id === 'super_admin_default' || a.role === 'super_admin'
+  );
+  const needsAdminSync = Boolean(
+    envUsername &&
+      envPassword &&
+      (!existingDefaultAdmin ||
+        existingDefaultAdmin.username !== targetUsername ||
+        !(await bcrypt.compare(targetPassword, existingDefaultAdmin.passwordHash)))
+  );
+
   const needsSeed =
     state.categories.length === 0 ||
     state.products.length === 0 ||
     state.admin_accounts.length === 0 ||
-    state.coupons.length === 0;
+    state.coupons.length === 0 ||
+    needsAdminSync;
 
   if (needsSeed) {
-    const username = process.env.ADMIN_USERNAME?.trim() || 'oudom_admin';
-    const rawPassword = process.env.ADMIN_PASSWORD?.trim() || 'OudomShop@2026';
-    const passwordHash = await bcrypt.hash(rawPassword, 12);
+    const passwordHash = await bcrypt.hash(targetPassword, 12);
 
     await mutateDb((db) => {
       const now = new Date().toISOString();
@@ -171,7 +186,7 @@ export async function ensureInitialDataSeeded(): Promise<void> {
       if (db.admin_accounts.length === 0) {
         db.admin_accounts.push({
           id: 'super_admin_default',
-          username,
+          username: targetUsername,
           email: process.env.SUPER_ADMIN_EMAIL?.trim() || 'krenoudom7@gmail.com',
           displayName: 'Oudom Super Admin',
           passwordHash,
@@ -179,6 +194,15 @@ export async function ensureInitialDataSeeded(): Promise<void> {
           active: true,
           createdAt: now,
         });
+      } else if (needsAdminSync) {
+        const target =
+          db.admin_accounts.find((a) => a.id === 'super_admin_default') ||
+          db.admin_accounts.find((a) => a.role === 'super_admin');
+        if (target) {
+          target.username = targetUsername;
+          target.passwordHash = passwordHash;
+          target.active = true;
+        }
       }
     });
   }

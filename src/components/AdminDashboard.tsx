@@ -82,7 +82,13 @@ type AdminTab = 'overview' | 'products' | 'orders' | 'customers' | 'coupons' | '
 export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
   const [authLoading, setAuthLoading] = useState(true);
   const [adminUser, setAdminUser] = useState<AdminSessionUser | null>(null);
-  const [authToken, setAuthToken] = useState<string | null>(null);
+  const [authToken, setAuthToken] = useState<string | null>(() => {
+    try {
+      return sessionStorage.getItem('oudom_admin_token');
+    } catch {
+      return null;
+    }
+  });
 
   // Login form state
   const [username, setUsername] = useState('');
@@ -155,15 +161,15 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
       const headers = authHeaders();
       const [statsRes, catRes, prodRes, ordRes, custRes, payRes, cpnRes, setRes, bkpRes] =
         await Promise.all([
-          fetch('/api/admin/stats', { headers, credentials: 'include' }),
-          fetch('/api/categories', { headers, credentials: 'include' }),
-          fetch('/api/products', { headers, credentials: 'include' }),
-          fetch('/api/admin/orders', { headers, credentials: 'include' }),
-          fetch('/api/admin/customers', { headers, credentials: 'include' }),
-          fetch('/api/admin/payments', { headers, credentials: 'include' }),
-          fetch('/api/admin/coupons', { headers, credentials: 'include' }),
-          fetch('/api/admin/settings', { headers, credentials: 'include' }),
-          fetch('/api/admin/backups', { headers, credentials: 'include' }),
+          fetch(apiUrl('/api/admin/stats'), { headers, credentials: 'include' }),
+          fetch(apiUrl('/api/categories'), { headers, credentials: 'include' }),
+          fetch(apiUrl('/api/products'), { headers, credentials: 'include' }),
+          fetch(apiUrl('/api/admin/orders'), { headers, credentials: 'include' }),
+          fetch(apiUrl('/api/admin/customers'), { headers, credentials: 'include' }),
+          fetch(apiUrl('/api/admin/payments'), { headers, credentials: 'include' }),
+          fetch(apiUrl('/api/admin/coupons'), { headers, credentials: 'include' }),
+          fetch(apiUrl('/api/admin/settings'), { headers, credentials: 'include' }),
+          fetch(apiUrl('/api/admin/backups'), { headers, credentials: 'include' }),
         ]);
 
       if (statsRes.ok) {
@@ -204,7 +210,7 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
       }
 
       if (adminUser?.role === 'super_admin') {
-        const usersRes = await fetch('/api/admin/users', { headers, credentials: 'include' });
+        const usersRes = await fetch(apiUrl('/api/admin/users'), { headers, credentials: 'include' });
         if (usersRes.ok) {
           const d = (await usersRes.json()) as { users: AdminUser[] };
           setAdminUsers(d.users);
@@ -220,7 +226,10 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
   useEffect(() => {
     const checkSession = async () => {
       try {
-        const res = await fetch(apiUrl('/api/admin/me'), { credentials: 'include' });
+        const res = await fetch(apiUrl('/api/admin/me'), {
+          headers: authHeaders(),
+          credentials: 'include',
+        });
         if (res.ok) {
           const data = await safeReadJson<{ user: AdminSessionUser }>(res);
           if (data?.user) setAdminUser(data.user);
@@ -232,7 +241,7 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
       }
     };
     void checkSession();
-  }, []);
+  }, [authHeaders]);
 
   useEffect(() => {
     if (adminUser) {
@@ -267,6 +276,13 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
       if (!res.ok || !data.user) {
         setLoginError(data.error || 'ការចូលគណនីបរាជ័យ');
         return;
+      }
+      if (data.token) {
+        try {
+          sessionStorage.setItem('oudom_admin_token', data.token);
+        } catch {
+          // Ignore storage error
+        }
       }
       setAuthToken(data.token || null);
       setAdminUser(data.user);
@@ -306,6 +322,13 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
         setLoginError(data.error || 'គណនី Google នេះមិនមានសិទ្ធិ Admin ទេ');
         return;
       }
+      if (data.token) {
+        try {
+          sessionStorage.setItem('oudom_admin_token', data.token);
+        } catch {
+          // Ignore storage error
+        }
+      }
       setAuthToken(data.token || null);
       setAdminUser(data.user);
     } catch {
@@ -316,7 +339,12 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
   };
 
   const handleLogout = async () => {
-    await fetch('/api/admin/logout', { method: 'POST', credentials: 'include' });
+    await fetch(apiUrl('/api/admin/logout'), { method: 'POST', credentials: 'include' });
+    try {
+      sessionStorage.removeItem('oudom_admin_token');
+    } catch {
+      // Ignore storage error
+    }
     setAdminUser(null);
     setAuthToken(null);
     setPassword('');
@@ -325,7 +353,7 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
 
   const handleDeleteProduct = async (id: string) => {
     setActionError('');
-    const res = await fetch(`/api/admin/products/${id}`, {
+    const res = await fetch(apiUrl(`/api/admin/products/${id}`), {
       method: 'DELETE',
       headers: authHeaders(),
       credentials: 'include',
@@ -342,7 +370,7 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
 
   const handleToggleStockStatus = async (p: Product) => {
     const nextStatus = p.status === 'available' ? 'out_of_stock' : 'available';
-    const res = await fetch(`/api/admin/products/${p.id}`, {
+    const res = await fetch(apiUrl(`/api/admin/products/${p.id}`), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       credentials: 'include',
@@ -356,7 +384,7 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
   const handleUpdateOrderStatus = async (orderId: string, orderStatus: OrderStatus) => {
     setActionError('');
     setActionMsg('');
-    const res = await fetch(`/api/admin/orders/${orderId}/status`, {
+    const res = await fetch(apiUrl(`/api/admin/orders/${orderId}/status`), {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       credentials: 'include',
@@ -375,7 +403,7 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
     e.preventDefault();
     setActionError('');
     setActionMsg('');
-    const res = await fetch('/api/admin/users', {
+    const res = await fetch(apiUrl('/api/admin/users'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       credentials: 'include',
@@ -401,7 +429,7 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
   };
 
   const handleToggleAdminActive = async (user: AdminUser) => {
-    const res = await fetch(`/api/admin/users/${user.id}`, {
+    const res = await fetch(apiUrl(`/api/admin/users/${user.id}`), {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       credentials: 'include',
@@ -418,7 +446,7 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
   const handleRunManualBackup = async () => {
     setActionError('');
     setActionMsg('');
-    const res = await fetch('/api/admin/backups', {
+    const res = await fetch(apiUrl('/api/admin/backups'), {
       method: 'POST',
       headers: authHeaders(),
       credentials: 'include',
@@ -432,7 +460,7 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
   };
 
   const handleDownloadBackupJson = async () => {
-    const res = await fetch('/api/admin/backups/export', {
+    const res = await fetch(apiUrl('/api/admin/backups/export'), {
       headers: authHeaders(),
       credentials: 'include',
     });
@@ -452,7 +480,7 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
   const handleTestTelegram = async () => {
     setActionError('');
     setActionMsg('');
-    const res = await fetch('/api/admin/telegram/test', {
+    const res = await fetch(apiUrl('/api/admin/telegram/test'), {
       method: 'POST',
       headers: authHeaders(),
       credentials: 'include',
@@ -473,7 +501,7 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
     setActionMsg('');
     setCatBusy(true);
     try {
-      const res = await fetch('/api/admin/categories', {
+      const res = await fetch(apiUrl('/api/admin/categories'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
         credentials: 'include',
@@ -500,7 +528,7 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
     if (!catEditNameKm.trim()) return;
     setActionError('');
     setActionMsg('');
-    const res = await fetch(`/api/admin/categories/${id}`, {
+    const res = await fetch(apiUrl(`/api/admin/categories/${id}`), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       credentials: 'include',
@@ -522,7 +550,7 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
   const handleDeleteCategory = async (id: string) => {
     setActionError('');
     setActionMsg('');
-    const res = await fetch(`/api/admin/categories/${id}`, {
+    const res = await fetch(apiUrl(`/api/admin/categories/${id}`), {
       method: 'DELETE',
       headers: authHeaders(),
       credentials: 'include',
@@ -543,7 +571,7 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
     setActionMsg('');
     setCouponBusy(true);
     try {
-      const res = await fetch('/api/admin/coupons', {
+      const res = await fetch(apiUrl('/api/admin/coupons'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
         credentials: 'include',
@@ -569,7 +597,7 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
   };
 
   const handleToggleCouponActive = async (coupon: Coupon) => {
-    const res = await fetch(`/api/admin/coupons/${coupon.id}`, {
+    const res = await fetch(apiUrl(`/api/admin/coupons/${coupon.id}`), {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       credentials: 'include',
@@ -579,7 +607,7 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
   };
 
   const handleDeleteCoupon = async (id: string) => {
-    const res = await fetch(`/api/admin/coupons/${id}`, {
+    const res = await fetch(apiUrl(`/api/admin/coupons/${id}`), {
       method: 'DELETE',
       headers: authHeaders(),
       credentials: 'include',
@@ -633,7 +661,7 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
     setActionMsg('');
     setSettingsBusy(true);
     try {
-      const res = await fetch('/api/admin/settings', {
+      const res = await fetch(apiUrl('/api/admin/settings'), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
         credentials: 'include',
@@ -662,6 +690,11 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
 
   // ---------------- LOGIN SCREEN ----------------
   if (!adminUser) {
+    const isGitHubPagesWithoutApi =
+      typeof window !== 'undefined' &&
+      window.location.hostname.endsWith('.github.io') &&
+      !import.meta.env.VITE_API_BASE_URL?.trim();
+
     return (
       <div className="min-h-screen flex flex-col justify-center bg-[#0B0B0C] px-4 py-10 text-white">
         <div className="mx-auto w-full max-w-md rounded-2xl border border-white/10 bg-[#141416] p-6 sm:p-8 shadow-2xl">
@@ -680,6 +713,18 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
             </button>
           </div>
 
+          {isGitHubPagesWithoutApi && (
+            <div className="mt-4 rounded-xl border border-amber-500/40 bg-amber-950/50 p-3.5 text-xs text-amber-100 leading-relaxed space-y-1">
+              <p className="font-semibold text-amber-300">
+                អ្នកកំពុងបើកលើ GitHub Pages (Static Web)
+              </p>
+              <p>
+                ទំព័រ Static មិនមាន Node.js Backend ទេ។ សូមបើក <span className="font-mono-num">/admin</span> លើ Link App Server របស់អ្នក (ឬកំណត់{' '}
+                <code className="text-amber-200">VITE_API_BASE_URL</code> ក្នុង GitHub Repository Variables) ដើម្បីចូលគ្រប់គ្រងហាង។
+              </p>
+            </div>
+          )}
+
           <form onSubmit={handlePasswordLogin} className="mt-6 space-y-4">
             <div>
               <label className="block text-xs font-medium text-white/75 mb-1.5">
@@ -691,7 +736,7 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
                 autoComplete="username"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                placeholder="oudom_admin"
+                placeholder="udom"
                 className="h-12 w-full rounded-xl border border-white/15 bg-black/40 px-4 text-sm text-white placeholder:text-white/35 focus:border-[#C9A227] focus:outline-none"
               />
             </div>
