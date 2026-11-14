@@ -10,6 +10,7 @@ import {
   query,
   setDoc,
   updateDoc,
+  writeBatch,
 } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase.ts';
 import type {
@@ -338,6 +339,24 @@ function sanitizeSettingsDoc(s: StoreSettings): Record<string, unknown> {
     announcementText: String(s.announcementText || ''),
     contactPhone: String(s.contactPhone || ''),
     contactAddress: String(s.contactAddress || ''),
+    contactLat:
+      typeof s.contactLat === 'number' &&
+      Number.isFinite(s.contactLat) &&
+      s.contactLat >= -90 &&
+      s.contactLat <= 90
+        ? Number(s.contactLat.toFixed(6))
+        : undefined,
+    contactLng:
+      typeof s.contactLng === 'number' &&
+      Number.isFinite(s.contactLng) &&
+      s.contactLng >= -180 &&
+      s.contactLng <= 180
+        ? Number(s.contactLng.toFixed(6))
+        : undefined,
+    contactMapUrl:
+      typeof s.contactMapUrl === 'string' && s.contactMapUrl.trim()
+        ? s.contactMapUrl.trim().slice(0, 400)
+        : undefined,
     telegramContact: String(s.telegramContact || ''),
     abaAccountName: String(s.abaAccountName || ''),
     abaAccountId: String(s.abaAccountId || ''),
@@ -464,6 +483,9 @@ export async function createOrderInFirestore(input: {
   customerPhone: string;
   deliveryZone: DeliveryZone;
   shippingAddress: string;
+  locationLat?: number;
+  locationLng?: number;
+  locationMapUrl?: string;
   couponCode?: string;
   notes?: string;
   currency: CurrencyCode;
@@ -553,12 +575,33 @@ export async function createOrderInFirestore(input: {
   const effectiveMethod: PaymentMethod =
     input.paymentMethod === 'cod' ? 'cod' : 'bank_qr';
 
+  const hasValidCoords =
+    typeof input.locationLat === 'number' &&
+    typeof input.locationLng === 'number' &&
+    Number.isFinite(input.locationLat) &&
+    Number.isFinite(input.locationLng) &&
+    input.locationLat >= -90 &&
+    input.locationLat <= 90 &&
+    input.locationLng >= -180 &&
+    input.locationLng <= 180;
+  const cleanLat = hasValidCoords ? Number(input.locationLat!.toFixed(6)) : undefined;
+  const cleanLng = hasValidCoords ? Number(input.locationLng!.toFixed(6)) : undefined;
+  const cleanMapUrl =
+    typeof input.locationMapUrl === 'string' && input.locationMapUrl.trim()
+      ? input.locationMapUrl.trim().slice(0, 400)
+      : cleanLat !== undefined && cleanLng !== undefined
+      ? `https://www.google.com/maps?q=${cleanLat},${cleanLng}`
+      : undefined;
+
   const orderPayload: Record<string, unknown> = stripUndefined({
     orderNumber,
     customerId: `cust_${input.customerPhone.replace(/\D/g, '') || suffix}`,
     customerName: input.customerName.trim(),
     customerPhone: input.customerPhone.trim(),
     shippingAddress: input.shippingAddress.trim(),
+    locationLat: cleanLat,
+    locationLng: cleanLng,
+    locationMapUrl: cleanMapUrl,
     deliveryZone: input.deliveryZone,
     notes: input.notes?.trim() || undefined,
     items: orderItems,
@@ -614,14 +657,17 @@ export async function createOrderInFirestore(input: {
 export async function submitPaymentProofInFirestore(input: {
   orderId: string;
   orderNumber: string;
+  customerPhone: string;
   reference?: string;
   slipUrl?: string;
 }): Promise<void> {
   const proofId = generateDocId('prf');
   const submittedAt = new Date().toISOString();
+  const trackingKey = await computeTrackingKey(input.orderNumber, input.customerPhone);
   const payload = stripUndefined({
     orderId: input.orderId,
     orderNumber: input.orderNumber,
+    trackingKey,
     reference: input.reference?.trim() || undefined,
     slipUrl: input.slipUrl || undefined,
     submittedAt,
@@ -632,6 +678,75 @@ export async function submitPaymentProofInFirestore(input: {
   } catch (err) {
     handleFirestoreError(err, OperationType.CREATE, `payment_proofs/${proofId}`);
   }
+}
+
+export async function confirmOrderReceiptInFirestore(input: {
+  orderNumber: string;
+  customerPhone: string;
+}): Promise<{ orderStatus: OrderStatus; receiptConfirmed: boolean; receiptConfirmedAt: string }> {
+  const cleanOrderNum = input.orderNumber.trim().toUpperCase();
+  const trackingKey = await computeTrackingKey(cleanOrderNum, input.customerPhone);
+  const trackingRef = doc(db, 'order_tracking', trackingKey);
+  const confirmRef = doc(db, 'receipt_confirmations', trackingKey);
+
+  let snap;
+  try {
+    snap = await getDoc(trackingRef);
+  } catch (err) {
+    handleFirestoreError(err, OperationType.GET, `order_tracking/${trackingKey}`);
+  }
+
+  if (!snap.exists()) {
+    throw new Error(
+      'លេខកូដបញ្ជាទិញ ឬលេខទូរស័ព្ទមិនត្រូវគ្នាទេ — មានតែភ្ញៀវដែលជាអ្នកកុម្ម៉ង់ប៉ុណ្ណោះ ទើបអាចបញ្ជាក់បង្កាន់ដៃបាន'
+    );
+  }
+
+  const d = snap.data() as {
+    orderId: string;
+    orderNumber: string;
+    orderStatus: OrderStatus;
+    receiptConfirmed?: boolean;
+    receiptConfirmedAt?: string;
+  };
+
+  if (d.orderStatus === 'cancelled' || d.orderStatus === 'failed') {
+    throw new Error('មិនអាចបញ្ជាក់បង្កាន់ដៃសម្រាប់ការបញ្ជាទិញដែលបានលុប ឬបរាជ័យបានទេ');
+  }
+
+  if (d.receiptConfirmed || d.orderStatus === 'completed') {
+    return {
+      orderStatus: 'completed',
+      receiptConfirmed: true,
+      receiptConfirmedAt: d.receiptConfirmedAt || new Date().toISOString(),
+    };
+  }
+
+  const nowIso = new Date().toISOString();
+  const batch = writeBatch(db);
+  batch.set(confirmRef, {
+    orderId: d.orderId,
+    orderNumber: d.orderNumber,
+    confirmedAt: nowIso,
+  });
+  batch.update(trackingRef, {
+    orderStatus: 'completed',
+    receiptConfirmed: true,
+    receiptConfirmedAt: nowIso,
+    updatedAt: nowIso,
+  });
+
+  try {
+    await batch.commit();
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, `order_tracking/${trackingKey}`);
+  }
+
+  return {
+    orderStatus: 'completed',
+    receiptConfirmed: true,
+    receiptConfirmedAt: nowIso,
+  };
 }
 
 export async function lookupOrderTrackingInFirestore(
@@ -658,6 +773,8 @@ export async function lookupOrderTrackingInFirestore(
     currency: CurrencyCode;
     items: OrderItem[];
     paymentSubmittedAt?: string;
+    receiptConfirmed?: boolean;
+    receiptConfirmedAt?: string;
     createdAt: string;
     updatedAt: string;
   };
@@ -683,6 +800,8 @@ export async function lookupOrderTrackingInFirestore(
     abaTranId: d.orderNumber,
     abaMode: d.paymentMethod === 'cod' ? 'cod' : 'direct_qr',
     paymentSubmittedAt: d.paymentSubmittedAt,
+    receiptConfirmed: d.receiptConfirmed ?? d.orderStatus === 'completed',
+    receiptConfirmedAt: d.receiptConfirmedAt,
     telegramNotified: false,
     createdAt: d.createdAt,
     updatedAt: d.updatedAt,
@@ -804,19 +923,30 @@ export async function loadAdminDashboardFromFirestore(): Promise<{
     string,
     { reference?: string; slipUrl?: string; submittedAt: string }
   >();
+  const confirmationByOrderId = new Map<string, { confirmedAt: string }>();
 
   try {
-    const [catSnap, prodSnap, ordSnap, proofSnap, cpnSnap, setSnap, bkpSnap, rolesSnap] =
-      await Promise.all([
-        getDocs(query(collection(db, 'categories'), orderBy('sortOrder', 'asc'))),
-        getDocs(collection(db, 'products')),
-        getDocs(collection(db, 'orders')),
-        getDocs(collection(db, 'payment_proofs')),
-        getDocs(collection(db, 'coupons')),
-        getDoc(doc(db, 'settings', 'storefront')),
-        getDocs(collection(db, 'backups')),
-        getDocs(collection(db, 'admin_roles')),
-      ]);
+    const [
+      catSnap,
+      prodSnap,
+      ordSnap,
+      proofSnap,
+      confirmSnap,
+      cpnSnap,
+      setSnap,
+      bkpSnap,
+      rolesSnap,
+    ] = await Promise.all([
+      getDocs(query(collection(db, 'categories'), orderBy('sortOrder', 'asc'))),
+      getDocs(collection(db, 'products')),
+      getDocs(collection(db, 'orders')),
+      getDocs(collection(db, 'payment_proofs')),
+      getDocs(collection(db, 'receipt_confirmations')),
+      getDocs(collection(db, 'coupons')),
+      getDoc(doc(db, 'settings', 'storefront')),
+      getDocs(collection(db, 'backups')),
+      getDocs(collection(db, 'admin_roles')),
+    ]);
 
     if (!catSnap.empty) {
       categories = catSnap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Category, 'id'>) }));
@@ -836,6 +966,13 @@ export async function loadAdminDashboardFromFirestore(): Promise<{
       }
     }
 
+    for (const cdoc of confirmSnap.docs) {
+      const c = cdoc.data() as { orderId: string; confirmedAt: string };
+      if (c.orderId && !confirmationByOrderId.has(c.orderId)) {
+        confirmationByOrderId.set(c.orderId, { confirmedAt: c.confirmedAt });
+      }
+    }
+
     orders = ordSnap.docs
       .map((d) => {
         const ord = { id: d.id, ...(d.data() as Omit<Order, 'id'>) };
@@ -844,6 +981,15 @@ export async function loadAdminDashboardFromFirestore(): Promise<{
           ord.paymentReference = prf.reference || ord.paymentReference;
           ord.paymentSlipUrl = prf.slipUrl || ord.paymentSlipUrl;
           ord.paymentSubmittedAt = prf.submittedAt;
+        }
+        const conf = confirmationByOrderId.get(ord.id);
+        if (conf && ord.orderStatus !== 'cancelled' && ord.orderStatus !== 'failed') {
+          ord.receiptConfirmed = true;
+          ord.receiptConfirmedAt = conf.confirmedAt;
+          ord.orderStatus = 'completed';
+          if (conf.confirmedAt > (ord.updatedAt || '')) {
+            ord.updatedAt = conf.confirmedAt;
+          }
         }
         return ord;
       })
@@ -1137,12 +1283,18 @@ export async function updateOrderStatusInFirestore(
   order: Order,
   nextOrderStatus: OrderStatus
 ): Promise<void> {
+  if (nextOrderStatus === 'completed') {
+    throw new Error('ការបញ្ជាក់បង្កាន់ដៃ (ដល់ដៃជោគជ័យ) គឺសម្រាប់តែភ្ញៀវដែលជាអ្នកកុម្ម៉ង់ប៉ុណ្ណោះ');
+  }
+  if (order.receiptConfirmed || order.orderStatus === 'completed') {
+    throw new Error('ភ្ញៀវបានបញ្ជាក់បង្កាន់ដៃទទួលទំនិញរួចរាល់ហើយ មិនអាចកែប្រែស្ថានភាពបានទេ');
+  }
+
   const now = new Date().toISOString();
   const nextPaymentStatus =
     nextOrderStatus === 'paid' ||
     nextOrderStatus === 'processing' ||
-    nextOrderStatus === 'shipping' ||
-    nextOrderStatus === 'completed'
+    nextOrderStatus === 'shipping'
       ? 'paid'
       : nextOrderStatus === 'failed' || nextOrderStatus === 'cancelled'
       ? 'failed'
@@ -1263,6 +1415,7 @@ export function subscribeAdminOrderEventsInFirestore(
 ): () => void {
   let initialOrders = true;
   let initialProofs = true;
+  let initialConfirmations = true;
 
   const unsubOrders = onSnapshot(
     collection(db, 'orders'),
@@ -1294,8 +1447,24 @@ export function subscribeAdminOrderEventsInFirestore(
     }
   );
 
+  const unsubConfirmations = onSnapshot(
+    collection(db, 'receipt_confirmations'),
+    () => {
+      if (initialConfirmations) {
+        initialConfirmations = false;
+        return;
+      }
+      onChanged();
+    },
+    (err) => {
+      console.error('Firestore receipt_confirmations listener error:', err);
+      onError?.(err);
+    }
+  );
+
   return () => {
     unsubOrders();
     unsubProofs();
+    unsubConfirmations();
   };
 }

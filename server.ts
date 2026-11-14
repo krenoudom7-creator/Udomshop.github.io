@@ -317,6 +317,11 @@ async function startServer() {
       categories,
       abaConfigured: Boolean(getAbaConfig()),
       telegramConfigured: isTelegramConfigured(),
+      googleMapsApiKey: (
+        process.env.VITE_GOOGLE_MAPS_API_KEY ||
+        process.env.GOOGLE_MAPS_API_KEY ||
+        ''
+      ).trim(),
     });
   });
 
@@ -433,6 +438,9 @@ async function startServer() {
         customerName?: string;
         customerPhone?: string;
         shippingAddress?: string;
+        locationLat?: number;
+        locationLng?: number;
+        locationMapUrl?: string;
         deliveryZone?: DeliveryZone;
         couponCode?: string;
         notes?: string;
@@ -449,6 +457,26 @@ async function startServer() {
       const customerName = String(body.customerName || '').trim();
       const customerPhone = String(body.customerPhone || '').trim();
       const shippingAddress = String(body.shippingAddress || '').trim();
+      const rawLat = body.locationLat !== undefined ? Number(body.locationLat) : NaN;
+      const rawLng = body.locationLng !== undefined ? Number(body.locationLng) : NaN;
+      const hasValidCoords =
+        Number.isFinite(rawLat) &&
+        Number.isFinite(rawLng) &&
+        rawLat >= -90 &&
+        rawLat <= 90 &&
+        rawLng >= -180 &&
+        rawLng <= 180;
+      const locationLat = hasValidCoords ? Number(rawLat.toFixed(6)) : undefined;
+      const locationLng = hasValidCoords ? Number(rawLng.toFixed(6)) : undefined;
+      const rawMapUrl = typeof body.locationMapUrl === 'string' ? body.locationMapUrl.trim().slice(0, 400) : '';
+      const validCustomUrl = /^https?:\/\/(?:www\.)?(?:google\.com\/maps|maps\.google\.com|maps\.app\.goo\.gl|goo\.gl\/maps)/i.test(rawMapUrl)
+        ? rawMapUrl
+        : undefined;
+      const locationMapUrl =
+        validCustomUrl ||
+        (locationLat !== undefined && locationLng !== undefined
+          ? `https://www.google.com/maps?q=${locationLat},${locationLng}`
+          : undefined);
       const deliveryZone: DeliveryZone =
         body.deliveryZone === 'province' ? 'province' : 'phnom_penh';
       const notes = String(body.notes || '').trim().slice(0, 300);
@@ -620,6 +648,9 @@ async function startServer() {
           customerName,
           customerPhone: normalizedPhone,
           shippingAddress,
+          ...(locationLat !== undefined ? { locationLat } : {}),
+          ...(locationLng !== undefined ? { locationLng } : {}),
+          ...(locationMapUrl ? { locationMapUrl } : {}),
           deliveryZone,
           notes,
           items: orderItems,
@@ -724,11 +755,29 @@ async function startServer() {
     }
   });
 
-  // Public: Customer submits Payment Slip Image &/or Transfer Reference (for Admin verification)
+  // Customer-only: Ordering customer submits Payment Slip Image &/or Transfer Reference
   app.post('/api/orders/:id/payment-proof', async (req, res) => {
     try {
       const reference = String(req.body?.reference || '').trim().slice(0, 120);
       const rawSlipDataUrl = typeof req.body?.slipDataUrl === 'string' ? req.body.slipDataUrl.trim() : '';
+      const customerPhoneDigits = String(req.body?.customerPhone || '').replace(/\D/g, '');
+      const suppliedOrderNumber = String(req.body?.orderNumber || '').trim().toUpperCase();
+
+      const precheckDb = await readDb();
+      const targetOrder = precheckDb.orders.find((o) => o.id === req.params.id);
+      if (!targetOrder) {
+        return res.status(404).json({ error: 'រកមិនឃើញការបញ្ជាទិញទេ' });
+      }
+      const expectedPhoneDigits = targetOrder.customerPhone.replace(/\D/g, '');
+      if (
+        !customerPhoneDigits ||
+        customerPhoneDigits !== expectedPhoneDigits ||
+        (suppliedOrderNumber && suppliedOrderNumber !== targetOrder.orderNumber)
+      ) {
+        return res.status(403).json({
+          error: 'មានតែភ្ញៀវដែលជាអ្នកកុម្ម៉ង់ប៉ុណ្ណោះ ទើបអាចបញ្ជាក់បង្កាន់ដៃសម្រាប់ការបញ្ជាទិញនេះបាន',
+        });
+      }
 
       if (!reference && !rawSlipDataUrl) {
         return res.status(400).json({ error: 'សូមភ្ជាប់រូបភាពវិក្កយបត្រ ឬបញ្ចូលលេខយោងផ្ទេរប្រាក់' });
@@ -803,10 +852,95 @@ async function startServer() {
     }
   });
 
-  // Public: Customer reports ABA Bank Transfer reference for Admin verification (does NOT mark Paid)
+  // Customer-only: Ordering customer confirms delivery receipt ("បញ្ជាក់បង្កាន់ដៃ")
+  app.post('/api/orders/:id/confirm-receipt', async (req, res) => {
+    try {
+      const suppliedOrderNumber = String(req.body?.orderNumber || '').trim().toUpperCase();
+      const customerPhoneDigits = String(req.body?.customerPhone || '').replace(/\D/g, '');
+      if (!suppliedOrderNumber || !customerPhoneDigits) {
+        return res.status(400).json({
+          error: 'សូមបញ្ចូលលេខកូដបញ្ជាទិញ និងលេខទូរស័ព្ទពេលកុម្ម៉ង់ ដើម្បីបញ្ជាក់បង្កាន់ដៃ',
+        });
+      }
+
+      const precheckDb = await readDb();
+      const existingOrder = precheckDb.orders.find((o) => o.id === req.params.id);
+      if (!existingOrder) {
+        return res.status(404).json({ error: 'រកមិនឃើញការបញ្ជាទិញទេ' });
+      }
+      const expectedPhoneDigits = existingOrder.customerPhone.replace(/\D/g, '');
+      if (
+        existingOrder.orderNumber.toUpperCase() !== suppliedOrderNumber ||
+        customerPhoneDigits !== expectedPhoneDigits
+      ) {
+        return res.status(403).json({
+          error: 'មានតែភ្ញៀវដែលជាអ្នកកុម្ម៉ង់ប៉ុណ្ណោះ ទើបអាចបញ្ជាក់បង្កាន់ដៃទទួលទំនិញបាន',
+        });
+      }
+
+      if (existingOrder.orderStatus === 'cancelled' || existingOrder.orderStatus === 'failed') {
+        return res.status(400).json({
+          error: 'មិនអាចបញ្ជាក់បង្កាន់ដៃសម្រាប់ការបញ្ជាទិញដែលបានលុប ឬបរាជ័យបានទេ',
+        });
+      }
+
+      if (existingOrder.receiptConfirmed || existingOrder.orderStatus === 'completed') {
+        return res.json({
+          order: existingOrder,
+          message: 'បង្កាន់ដៃទទួលទំនិញត្រូវបានបញ្ជាក់រួចរាល់ហើយ។',
+        });
+      }
+
+      const now = new Date().toISOString();
+      const updated = await mutateDb((state) => {
+        const order = state.orders.find((o) => o.id === req.params.id);
+        if (!order) return null;
+        order.receiptConfirmed = true;
+        order.receiptConfirmedAt = now;
+        order.orderStatus = 'completed';
+        order.updatedAt = now;
+        return { ...order };
+      });
+
+      if (!updated) {
+        return res.status(404).json({ error: 'រកមិនឃើញការបញ្ជាទិញទេ' });
+      }
+
+      await sendOrderTelegramNotification(updated, 'receipt_confirmed');
+
+      res.json({
+        order: updated,
+        message: 'បានបញ្ជាក់បង្កាន់ដៃទទួលទំនិញរួចរាល់! សូមអរគុណសម្រាប់ការទិញទំនិញពីហាងយើង។',
+      });
+    } catch (error) {
+      console.error('Receipt confirmation failed:', error);
+      res.status(500).json({ error: 'មិនអាចបញ្ជាក់បង្កាន់ដៃបានទេ' });
+    }
+  });
+
+  // Customer-only: Ordering customer reports ABA Bank Transfer reference for Admin verification (does NOT mark Paid)
   app.post('/api/orders/:id/transfer-note', async (req, res) => {
     try {
       const reference = String(req.body?.reference || '').trim().slice(0, 120);
+      const customerPhoneDigits = String(req.body?.customerPhone || '').replace(/\D/g, '');
+      const suppliedOrderNumber = String(req.body?.orderNumber || '').trim().toUpperCase();
+
+      const precheckDb = await readDb();
+      const targetOrder = precheckDb.orders.find((o) => o.id === req.params.id);
+      if (!targetOrder) {
+        return res.status(404).json({ error: 'រកមិនឃើញការបញ្ជាទិញទេ' });
+      }
+      const expectedPhoneDigits = targetOrder.customerPhone.replace(/\D/g, '');
+      if (
+        !customerPhoneDigits ||
+        customerPhoneDigits !== expectedPhoneDigits ||
+        (suppliedOrderNumber && suppliedOrderNumber !== targetOrder.orderNumber)
+      ) {
+        return res.status(403).json({
+          error: 'មានតែភ្ញៀវដែលជាអ្នកកុម្ម៉ង់ប៉ុណ្ណោះ ទើបអាចបញ្ជាក់បង្កាន់ដៃសម្រាប់ការបញ្ជាទិញនេះបាន',
+        });
+      }
+
       const now = new Date().toISOString();
       const updated = await mutateDb((state) => {
         const order = state.orders.find((o) => o.id === req.params.id);
@@ -1382,6 +1516,34 @@ async function startServer() {
             announcementText: b.announcementText !== undefined ? String(b.announcementText).trim() : state.settings.announcementText,
             contactPhone: b.contactPhone !== undefined ? String(b.contactPhone).trim() : state.settings.contactPhone,
             contactAddress: b.contactAddress !== undefined ? String(b.contactAddress).trim() : state.settings.contactAddress,
+            contactLat:
+              b.contactLat === undefined
+                ? state.settings.contactLat
+                : b.contactLat === null
+                ? undefined
+                : Number.isFinite(Number(b.contactLat)) &&
+                  Number(b.contactLat) >= -90 &&
+                  Number(b.contactLat) <= 90
+                ? Number(Number(b.contactLat).toFixed(6))
+                : state.settings.contactLat,
+            contactLng:
+              b.contactLng === undefined
+                ? state.settings.contactLng
+                : b.contactLng === null
+                ? undefined
+                : Number.isFinite(Number(b.contactLng)) &&
+                  Number(b.contactLng) >= -180 &&
+                  Number(b.contactLng) <= 180
+                ? Number(Number(b.contactLng).toFixed(6))
+                : state.settings.contactLng,
+            contactMapUrl:
+              b.contactMapUrl === undefined
+                ? state.settings.contactMapUrl
+                : /^https?:\/\/(?:www\.)?(?:google\.com\/maps|maps\.google\.com|maps\.app\.goo\.gl|goo\.gl\/maps)/i.test(
+                    String(b.contactMapUrl || '').trim()
+                  )
+                ? String(b.contactMapUrl || '').trim().slice(0, 400)
+                : undefined,
             telegramContact: b.telegramContact !== undefined ? String(b.telegramContact).trim() : state.settings.telegramContact,
             abaAccountName: b.abaAccountName !== undefined ? String(b.abaAccountName).trim() : state.settings.abaAccountName,
             abaAccountId: b.abaAccountId !== undefined ? String(b.abaAccountId).trim() : state.settings.abaAccountId,
@@ -1689,10 +1851,22 @@ async function startServer() {
         return res.status(400).json({ error: 'ស្ថានភាពការបញ្ជាទិញមិនត្រឹមត្រូវទេ' });
       }
 
+      if (nextStatus === 'completed') {
+        return res.status(403).json({
+          error: 'ការបញ្ជាក់បង្កាន់ដៃ (ដល់ដៃជោគជ័យ) គឺសម្រាប់តែភ្ញៀវដែលជាអ្នកកុម្ម៉ង់ប៉ុណ្ណោះ',
+        });
+      }
+
       const db = await readDb();
       const existingOrder = db.orders.find((o) => o.id === req.params.id);
       if (!existingOrder) {
         return res.status(404).json({ error: 'រកមិនឃើញការបញ្ជាទិញទេ' });
+      }
+
+      if (existingOrder.receiptConfirmed || existingOrder.orderStatus === 'completed') {
+        return res.status(400).json({
+          error: 'ភ្ញៀវបានបញ្ជាក់បង្កាន់ដៃទទួលទំនិញរួចរាល់ហើយ មិនអាចកែប្រែស្ថានភាពបានទេ',
+        });
       }
 
       if (nextStatus === 'paid' && existingOrder.paymentStatus !== 'paid') {

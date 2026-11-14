@@ -11,11 +11,13 @@ import {
   Database,
   Download,
   Edit3,
+  ExternalLink,
   FolderPlus,
   History,
   LayoutDashboard,
   Loader2,
   LogOut,
+  MapPin,
   Menu,
   Package,
   Plus,
@@ -72,7 +74,9 @@ import {
 import { SafeImage } from './SafeImage.tsx';
 import { AdminProductFormModal } from './AdminProductFormModal.tsx';
 import { OrderProgressTimeline } from './OrderProgressTimeline.tsx';
+import { LocationMapPicker } from './LocationMapPicker.tsx';
 import { playOrderAlertChime } from '../utils/orderHistory.ts';
+import { buildGoogleMapsDirectionsUrl, buildGoogleMapsUrl } from '../utils/mapsConfig.ts';
 import {
   compressImageToBoundedDataUrl,
   createBackupSnapshotInFirestore,
@@ -699,6 +703,10 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
   const handleUpdateOrderStatus = async (orderId: string, orderStatus: OrderStatus) => {
     setActionError('');
     setActionMsg('');
+    if (orderStatus === 'completed') {
+      setActionError('ការបញ្ជាក់បង្កាន់ដៃ (ដល់ដៃជោគជ័យ) គឺសម្រាប់តែភ្ញៀវដែលជាអ្នកកុម្ម៉ង់ប៉ុណ្ណោះ');
+      return;
+    }
     if (cloudMode) {
       const targetOrder = orders.find((o) => o.id === orderId);
       if (!targetOrder) return;
@@ -706,8 +714,8 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
         await updateOrderStatusInFirestore(targetOrder, orderStatus);
         setActionMsg('បានធ្វើបច្ចុប្បន្នភាពស្ថានភាពការបញ្ជាទិញ');
         void loadAllAdminData();
-      } catch {
-        setActionError('មិនអាចកែប្រែស្ថានភាពបានទេ');
+      } catch (err) {
+        setActionError(err instanceof Error ? err.message : 'មិនអាចកែប្រែស្ថានភាពបានទេ');
       }
       return;
     }
@@ -2185,6 +2193,42 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
                             {order.customerName} · {order.customerPhone}
                           </p>
                           <p className="mt-0.5 text-[#6B6559]">{order.shippingAddress}</p>
+                          {(order.locationMapUrl ||
+                            (order.locationLat != null && order.locationLng != null)) && (
+                            <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                              <a
+                                href={
+                                  order.locationMapUrl ||
+                                  buildGoogleMapsUrl(order.locationLat!, order.locationLng!)
+                                }
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 rounded-md border border-[#E2DDD3] bg-white px-2 py-1 text-[11px] font-semibold text-[#005B7F] hover:border-[#005B7F]"
+                              >
+                                <MapPin className="h-3 w-3 text-[#B8860B]" />
+                                <span>មើលទីតាំងលើ Map</span>
+                                <ExternalLink className="h-3 w-3" />
+                              </a>
+                              {order.locationLat != null && order.locationLng != null && (
+                                <a
+                                  href={buildGoogleMapsDirectionsUrl(
+                                    order.locationLat,
+                                    order.locationLng
+                                  )}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1 text-[11px] font-medium text-[#111111] underline"
+                                >
+                                  ផ្លូវដឹកជញ្ជូន
+                                </a>
+                              )}
+                              {order.locationLat != null && order.locationLng != null && (
+                                <span className="font-mono-num text-[10px] text-[#8A8478]">
+                                  {order.locationLat.toFixed(5)}, {order.locationLng.toFixed(5)}
+                                </span>
+                              )}
+                            </div>
+                          )}
                           {order.couponCode && (
                             <p className="mt-1 font-mono-num text-emerald-800">
                               Promo: {order.couponCode} (-${(order.couponDiscountUsd || 0).toFixed(2)})
@@ -2262,20 +2306,39 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
                               <span>បញ្ជាក់បានទទួលប្រាក់ (Paid)</span>
                             </button>
                           )}
+                          {(order.receiptConfirmed || order.orderStatus === 'completed') && (
+                            <span className="inline-flex h-10 items-center gap-1 rounded-xl border border-emerald-200 bg-emerald-50 px-3 text-[11px] font-semibold text-emerald-800">
+                              <Check className="h-3.5 w-3.5" />
+                              <span>
+                                ភ្ញៀវបានបញ្ជាក់បង្កាន់ដៃ
+                                {order.receiptConfirmedAt
+                                  ? ` (${formatDateTimeKm(order.receiptConfirmedAt)})`
+                                  : ''}
+                              </span>
+                            </span>
+                          )}
                         </div>
-                        <select
-                          value={order.orderStatus}
-                          onChange={(e) =>
-                            void handleUpdateOrderStatus(order.id, e.target.value as OrderStatus)
-                          }
-                          className="h-10 rounded-xl border border-[#E2DDD3] bg-[#FAF9F6] px-3 text-xs font-semibold text-[#111111]"
-                        >
-                          {Object.entries(ORDER_STATUS_LABELS).map(([k, v]) => (
-                            <option key={k} value={k}>
-                              {v.km} ({v.en})
-                            </option>
-                          ))}
-                        </select>
+                        <div className="flex flex-col items-end gap-1">
+                          <select
+                            value={order.orderStatus}
+                            disabled={Boolean(order.receiptConfirmed || order.orderStatus === 'completed')}
+                            onChange={(e) =>
+                              void handleUpdateOrderStatus(order.id, e.target.value as OrderStatus)
+                            }
+                            className="h-10 rounded-xl border border-[#E2DDD3] bg-[#FAF9F6] px-3 text-xs font-semibold text-[#111111] disabled:opacity-60"
+                          >
+                            {Object.entries(ORDER_STATUS_LABELS).map(([k, v]) => (
+                              <option key={k} value={k} disabled={k === 'completed'}>
+                                {k === 'completed'
+                                  ? `${v.km} (ភ្ញៀវជាអ្នកបញ្ជាក់បង្កាន់ដៃ)`
+                                  : `${v.km} (${v.en})`}
+                              </option>
+                            ))}
+                          </select>
+                          <span className="text-[10px] text-[#8A8478]">
+                            បញ្ជាក់បង្កាន់ដៃទទួលទំនិញ៖ សម្រាប់តែភ្ញៀវអ្នកកុម្ម៉ង់ប៉ុណ្ណោះ
+                          </span>
+                        </div>
                       </div>
                     </div>
                   ))}
@@ -2457,22 +2520,41 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
                                         {formatDateTimeKm(ord.createdAt)} ·{' '}
                                         {getPaymentMethodLabel(ord.paymentMethod)}
                                       </p>
+                                      {(ord.locationMapUrl ||
+                                        (ord.locationLat != null && ord.locationLng != null)) && (
+                                        <a
+                                          href={
+                                            ord.locationMapUrl ||
+                                            buildGoogleMapsUrl(ord.locationLat!, ord.locationLng!)
+                                          }
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="mt-1 inline-flex items-center gap-1 text-[11px] font-semibold text-[#005B7F] underline"
+                                        >
+                                          <MapPin className="h-3 w-3 text-[#B8860B]" />
+                                          <span>មើលទីតាំងលើ Google Maps</span>
+                                          <ExternalLink className="h-3 w-3" />
+                                        </a>
+                                      )}
                                     </div>
 
                                     <div className="flex items-center gap-2">
                                       <select
                                         value={ord.orderStatus}
+                                        disabled={Boolean(ord.receiptConfirmed || ord.orderStatus === 'completed')}
                                         onChange={(e) =>
                                           void handleUpdateOrderStatus(
                                             ord.id,
                                             e.target.value as OrderStatus
                                           )
                                         }
-                                        className="h-9 rounded-lg border border-[#E2DDD3] bg-white px-2.5 text-xs font-semibold text-[#111111]"
+                                        className="h-9 rounded-lg border border-[#E2DDD3] bg-white px-2.5 text-xs font-semibold text-[#111111] disabled:opacity-60"
                                       >
                                         {Object.entries(ORDER_STATUS_LABELS).map(([k, v]) => (
-                                          <option key={k} value={k}>
-                                            {v.km} ({v.en})
+                                          <option key={k} value={k} disabled={k === 'completed'}>
+                                            {k === 'completed'
+                                              ? `${v.km} (ភ្ញៀវជាអ្នកបញ្ជាក់)`
+                                              : `${v.km} (${v.en})`}
                                           </option>
                                         ))}
                                       </select>
@@ -2731,6 +2813,33 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
                           setSettingsForm({ ...settingsForm, contactAddress: e.target.value })
                         }
                         className="h-11 w-full rounded-xl border border-[#E2DDD3] bg-[#FAF9F6] px-3"
+                      />
+                    </div>
+
+                    <div className="sm:col-span-2 lg:col-span-3">
+                      <LocationMapPicker
+                        label="ទីតាំងហាងលើផែនទី (Store Map Location - បង្ហាញនៅ Footer)"
+                        helperText="ជ្រើសទីតាំងហាងលើផែនទី Google Maps ដើម្បីឱ្យអតិថិជនអាចចុចមើលទីតាំងហាងពីវេបសាយ។"
+                        lat={settingsForm.contactLat}
+                        lng={settingsForm.contactLng}
+                        mapUrl={settingsForm.contactMapUrl}
+                        mapHeightClass="h-52"
+                        onChange={(loc) =>
+                          setSettingsForm((prev) =>
+                            prev
+                              ? {
+                                  ...prev,
+                                  contactLat: loc.lat,
+                                  contactLng: loc.lng,
+                                  contactMapUrl: loc.mapUrl,
+                                  contactAddress:
+                                    loc.suggestedAddress && !prev.contactAddress.trim()
+                                      ? loc.suggestedAddress
+                                      : prev.contactAddress,
+                                }
+                              : prev
+                          )
+                        }
                       />
                     </div>
 
@@ -3287,6 +3396,38 @@ export function AdminDashboard({ onNavigateStore }: AdminDashboardProps) {
                 ដឹកជញ្ជូន ({printingOrder.deliveryZone === 'province' ? 'តាមខេត្ត' : 'ភ្នំពេញ'})៖{' '}
                 {printingOrder.shippingAddress}
               </p>
+              {(printingOrder.locationMapUrl ||
+                (printingOrder.locationLat != null && printingOrder.locationLng != null)) && (
+                <p className="break-all">
+                  ទីតាំងផែនទី៖{' '}
+                  <a
+                    href={
+                      printingOrder.locationMapUrl ||
+                      buildGoogleMapsUrl(
+                        printingOrder.locationLat!,
+                        printingOrder.locationLng!
+                      )
+                    }
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="font-mono-num text-[#005B7F] underline"
+                  >
+                    {printingOrder.locationMapUrl ||
+                      buildGoogleMapsUrl(
+                        printingOrder.locationLat!,
+                        printingOrder.locationLng!
+                      )}
+                  </a>
+                </p>
+              )}
+              {(printingOrder.receiptConfirmed || printingOrder.orderStatus === 'completed') && (
+                <p className="text-emerald-800 font-semibold">
+                  បង្កាន់ដៃទទួលទំនិញ៖ ភ្ញៀវបានបញ្ជាក់រួចរាល់
+                  {printingOrder.receiptConfirmedAt
+                    ? ` (${formatDateTimeKm(printingOrder.receiptConfirmedAt)})`
+                    : ''}
+                </p>
+              )}
             </div>
 
             <div className="border-t border-b border-[#ECE8DF] py-3 space-y-1.5 text-xs">

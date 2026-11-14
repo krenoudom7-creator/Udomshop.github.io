@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   ArrowRight,
+  ExternalLink,
   Heart,
   History,
   Lock,
@@ -36,6 +37,7 @@ import {
   loadCustomerOrderHistory,
   ORDER_HISTORY_EVENT,
 } from '../utils/orderHistory.ts';
+import { buildGoogleMapsUrl, setRuntimeGoogleMapsApiKey } from '../utils/mapsConfig.ts';
 
 interface StorefrontProps {
   onNavigateAdmin: () => void;
@@ -122,10 +124,14 @@ export function Storefront({ onNavigateAdmin }: StorefrontProps) {
             provinceShippingUsd?: number;
             categories?: Category[];
             settings?: StoreSettings;
+            googleMapsApiKey?: string;
           }>(cfgRes)
         : null;
 
       if (cfg) {
+        if (cfg.googleMapsApiKey) {
+          setRuntimeGoogleMapsApiKey(cfg.googleMapsApiKey);
+        }
         if (cfg.khrRate) setKhrRate(cfg.khrRate);
         if (cfg.freeShippingThresholdUsd !== undefined) {
           setFreeShippingThresholdUsd(cfg.freeShippingThresholdUsd);
@@ -898,10 +904,27 @@ export function Storefront({ onNavigateAdmin }: StorefrontProps) {
 
             <div className="space-y-2 text-xs text-white/80">
               <p className="font-semibold text-[#C9A227]">ព័ត៌មានទំនាក់ទំនង</p>
-              <p className="flex items-center gap-2">
-                <MapPin className="h-4 w-4 text-[#C9A227] shrink-0" />
-                <span>{settings?.contactAddress || 'រាជធានីភ្នំពេញ ព្រះរាជាណាចក្រកម្ពុជា'}</span>
-              </p>
+              <div className="flex items-start gap-2">
+                <MapPin className="h-4 w-4 text-[#C9A227] shrink-0 mt-0.5" />
+                <div>
+                  <p>{settings?.contactAddress || 'រាជធានីភ្នំពេញ ព្រះរាជាណាចក្រកម្ពុជា'}</p>
+                  {(settings?.contactMapUrl ||
+                    (settings?.contactLat != null && settings?.contactLng != null)) && (
+                    <a
+                      href={
+                        settings.contactMapUrl ||
+                        buildGoogleMapsUrl(settings.contactLat!, settings.contactLng!)
+                      }
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="mt-1 inline-flex items-center gap-1 text-[11px] font-semibold text-[#C9A227] hover:underline"
+                    >
+                      <span>មើលទីតាំងហាងលើ Google Maps</span>
+                      <ExternalLink className="h-3 w-3" />
+                    </a>
+                  )}
+                </div>
+              </div>
               <p className="flex items-center gap-2">
                 <Phone className="h-4 w-4 text-[#C9A227] shrink-0" />
                 <span className="font-mono-num">

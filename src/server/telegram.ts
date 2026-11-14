@@ -69,13 +69,14 @@ export async function sendRawTelegramMessage(htmlText: string): Promise<{ ok: bo
 
 export async function sendOrderTelegramNotification(
   order: Order,
-  eventType: 'new_order' | 'payment_paid' | 'order_cancelled' | 'order_failed'
+  eventType: 'new_order' | 'payment_paid' | 'order_cancelled' | 'order_failed' | 'receipt_confirmed'
 ): Promise<boolean> {
   const headerMap = {
     new_order: '🛍️ <b>ឧត្តម Shop - New Order</b>',
     payment_paid: '✅ <b>ឧត្តម Shop - ទទួលបានការទូទាត់ជោគជ័យ (Paid)</b>',
     order_cancelled: '🚫 <b>ឧត្តម Shop - ការបញ្ជាទិញត្រូវបានលុប (Cancelled)</b>',
     order_failed: '❌ <b>ឧត្តម Shop - ការទូទាត់បរាជ័យ (Failed)</b>',
+    receipt_confirmed: '📦✅ <b>ឧត្តម Shop - ភ្ញៀវបានបញ្ជាក់បង្កាន់ដៃទទួលទំនិញរួចរាល់</b>',
   };
 
   const itemLines = order.items
@@ -104,6 +105,14 @@ export async function sendOrderTelegramNotification(
     `• <b>លេខទូរស័ព្ទ:</b> ${escapeHtml(order.customerPhone)}`,
     `• <b>តំបន់ដឹកជញ្ជូន:</b> ${zoneLabel}`,
     `• <b>អាសយដ្ឋាន:</b> ${escapeHtml(order.shippingAddress)}`,
+    ...(order.locationMapUrl || (order.locationLat != null && order.locationLng != null)
+      ? [
+          `• <b>ទីតាំងលើផែនទី:</b> ${escapeHtml(
+            order.locationMapUrl ||
+              `https://www.google.com/maps?q=${order.locationLat},${order.locationLng}`
+          )}`,
+        ]
+      : []),
     '',
     `<b>មុខទំនិញ:</b>`,
     itemLines,

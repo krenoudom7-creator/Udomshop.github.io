@@ -13,7 +13,14 @@ import { formatDateTimeKm } from '../utils/format.ts';
 interface OrderProgressTimelineProps {
   order: Pick<
     Order,
-    'orderStatus' | 'paymentStatus' | 'paymentMethod' | 'paymentSubmittedAt' | 'createdAt' | 'updatedAt'
+    | 'orderStatus'
+    | 'paymentStatus'
+    | 'paymentMethod'
+    | 'paymentSubmittedAt'
+    | 'receiptConfirmed'
+    | 'receiptConfirmedAt'
+    | 'createdAt'
+    | 'updatedAt'
   >;
   compact?: boolean;
 }
@@ -69,7 +76,7 @@ const STATUS_TO_STEP_INDEX: Record<OrderStatus, number> = {
 };
 
 export function getOrderStageSummaryKm(
-  order: Pick<Order, 'orderStatus' | 'paymentMethod' | 'paymentSubmittedAt'>
+  order: Pick<Order, 'orderStatus' | 'paymentMethod' | 'paymentSubmittedAt' | 'receiptConfirmed'>
 ): string {
   switch (order.orderStatus) {
     case 'pending':
@@ -85,9 +92,9 @@ export function getOrderStageSummaryKm(
     case 'processing':
       return 'ដំណាក់កាលទី ៣/៥ · កំពុងត្រួតពិនិត្យគុណភាព និងវេចខ្ចប់ទំនិញ';
     case 'shipping':
-      return 'ដំណាក់កាលទី ៤/៥ · អ្នកដឹកជញ្ជូនកំពុងនាំទំនិញទៅជូនអ្នក';
+      return 'ដំណាក់កាលទី ៤/៥ · កំពុងដឹកជញ្ជូន — រង់ចាំភ្ញៀវបញ្ជាក់បង្កាន់ដៃពេលទទួលទំនិញ';
     case 'completed':
-      return 'ដំណាក់កាលទី ៥/៥ · ដឹកជញ្ជូនដល់ដៃអតិថិជនជោគជ័យ!';
+      return 'ដំណាក់កាលទី ៥/៥ · ភ្ញៀវបានបញ្ជាក់បង្កាន់ដៃទទួលទំនិញជោគជ័យ!';
     case 'cancelled':
       return 'ការបញ្ជាទិញនេះត្រូវបានលុបចោល';
     case 'failed':
@@ -220,6 +227,10 @@ export function OrderProgressTimeline({ order, compact = false }: OrderProgressT
                   >
                     {step.key === 'pending' && order.paymentSubmittedAt
                       ? 'បានបញ្ជាទិញ និងផ្ញើវិក្កយបត្រទៅហាងរួចរាល់'
+                      : step.key === 'completed' && order.receiptConfirmedAt
+                      ? `ភ្ញៀវបានបញ្ជាក់បង្កាន់ដៃទទួលទំនិញ (${formatDateTimeKm(order.receiptConfirmedAt)})`
+                      : step.key === 'completed'
+                      ? 'សម្រាប់តែភ្ញៀវអ្នកកុម្ម៉ង់បញ្ជាក់បង្កាន់ដៃពេលទទួលទំនិញ'
                       : step.descKm}
                   </p>
                 )}

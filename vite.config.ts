@@ -7,9 +7,18 @@ export default defineConfig(() => {
   const rawBase = process.env.VITE_BASE_PATH?.trim();
   const base = rawBase ? (rawBase.endsWith('/') ? rawBase : `${rawBase}/`) : '/';
 
+  const gmpKey = (
+    process.env.VITE_GOOGLE_MAPS_API_KEY ||
+    process.env.GOOGLE_MAPS_API_KEY ||
+    ''
+  ).trim();
+
   return {
     base,
     plugins: [react(), tailwindcss()],
+    define: {
+      __GMP_RUNTIME_KEY__: JSON.stringify(gmpKey),
+    },
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),

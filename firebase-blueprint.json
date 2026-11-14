@@ -43,6 +43,9 @@
         "announcementText": { "type": "string", "maxLength": 240 },
         "contactPhone": { "type": "string", "maxLength": 60 },
         "contactAddress": { "type": "string", "maxLength": 200 },
+        "contactLat": { "type": "number" },
+        "contactLng": { "type": "number" },
+        "contactMapUrl": { "type": "string", "maxLength": 400 },
         "telegramContact": { "type": "string", "maxLength": 80 },
         "abaAccountName": { "type": "string", "maxLength": 100 },
         "abaAccountId": { "type": "string", "maxLength": 40 },
@@ -95,6 +98,9 @@
         "customerName": { "type": "string", "minLength": 1, "maxLength": 120 },
         "customerPhone": { "type": "string", "minLength": 6, "maxLength": 32 },
         "shippingAddress": { "type": "string", "minLength": 3, "maxLength": 400 },
+        "locationLat": { "type": "number" },
+        "locationLng": { "type": "number" },
+        "locationMapUrl": { "type": "string", "maxLength": 400 },
         "deliveryZone": { "type": "string", "enum": ["phnom_penh", "province"] },
         "notes": { "type": "string", "maxLength": 500 },
         "items": { "type": "array" },
@@ -117,6 +123,8 @@
         "paymentSlipUrl": { "type": "string", "maxLength": 350000 },
         "paymentReference": { "type": "string", "maxLength": 120 },
         "paymentSubmittedAt": { "type": "string", "format": "date-time" },
+        "receiptConfirmed": { "type": "boolean" },
+        "receiptConfirmedAt": { "type": "string", "format": "date-time" },
         "telegramNotified": { "type": "boolean" },
         "userId": { "type": "string", "maxLength": 128 },
         "createdAt": { "type": "string", "format": "date-time" },
@@ -151,6 +159,8 @@
         "currency": { "type": "string", "enum": ["USD", "KHR"] },
         "items": { "type": "array" },
         "paymentSubmittedAt": { "type": "string", "maxLength": 64 },
+        "receiptConfirmed": { "type": "boolean" },
+        "receiptConfirmedAt": { "type": "string", "format": "date-time" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -158,16 +168,28 @@
     },
     "PaymentProof": {
       "title": "PaymentProof",
-      "description": "Customer submitted payment slip and bank reference",
+      "description": "Customer submitted payment slip and bank reference verified by trackingKey",
       "type": "object",
       "properties": {
         "orderId": { "type": "string", "maxLength": 128 },
         "orderNumber": { "type": "string", "maxLength": 64 },
+        "trackingKey": { "type": "string", "minLength": 64, "maxLength": 64 },
         "reference": { "type": "string", "maxLength": 120 },
         "slipUrl": { "type": "string", "maxLength": 350000 },
         "submittedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["orderId", "orderNumber", "submittedAt"]
+      "required": ["orderId", "orderNumber", "trackingKey", "submittedAt"]
+    },
+    "ReceiptConfirmation": {
+      "title": "ReceiptConfirmation",
+      "description": "Customer-only delivery receipt confirmation keyed by SHA-256(orderNumber:phone)",
+      "type": "object",
+      "properties": {
+        "orderId": { "type": "string", "maxLength": 128 },
+        "orderNumber": { "type": "string", "maxLength": 64 },
+        "confirmedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["orderId", "orderNumber", "confirmedAt"]
     },
     "Customer": {
       "title": "Customer",
@@ -277,7 +299,11 @@
     },
     "/payment_proofs/{proofId}": {
       "schema": { "$ref": "#/entities/PaymentProof" },
-      "description": "Customer submitted payment slip and reference; readable/updatable only by admin"
+      "description": "Customer submitted payment slip and reference; creatable only with valid trackingKey, readable/updatable only by admin"
+    },
+    "/receipt_confirmations/{trackingKey}": {
+      "schema": { "$ref": "#/entities/ReceiptConfirmation" },
+      "description": "Customer-only delivery receipt confirmation keyed by SHA-256(orderNumber:phone)"
     },
     "/customers/{customerId}": {
       "schema": { "$ref": "#/entities/Customer" },

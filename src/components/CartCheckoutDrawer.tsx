@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   Copy,
   CreditCard,
+  ExternalLink,
   Loader2,
   MapPin,
   Minus,
@@ -47,7 +48,9 @@ import {
 } from '../services/firestoreShop.ts';
 import { SafeImage } from './SafeImage.tsx';
 import { OrderProgressTimeline } from './OrderProgressTimeline.tsx';
+import { LocationMapPicker } from './LocationMapPicker.tsx';
 import { saveOrderToCustomerHistory } from '../utils/orderHistory.ts';
+import { buildGoogleMapsUrl } from '../utils/mapsConfig.ts';
 
 export interface AbaBankInfo {
   accountName: string;
@@ -99,6 +102,9 @@ export function CartCheckoutDrawer({
   const [customerPhone, setCustomerPhone] = useState('');
   const [deliveryZone, setDeliveryZone] = useState<DeliveryZone>('phnom_penh');
   const [shippingAddress, setShippingAddress] = useState('');
+  const [locationLat, setLocationLat] = useState<number | undefined>(undefined);
+  const [locationLng, setLocationLng] = useState<number | undefined>(undefined);
+  const [locationMapUrl, setLocationMapUrl] = useState<string | undefined>(undefined);
   const [notes, setNotes] = useState('');
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('bank_qr');
   const [qrCurrency, setQrCurrency] = useState<CurrencyCode>(currency);
@@ -251,6 +257,9 @@ export function CartCheckoutDrawer({
           customerPhone: customerPhone.trim(),
           deliveryZone,
           shippingAddress: shippingAddress.trim(),
+          ...(locationLat !== undefined ? { locationLat } : {}),
+          ...(locationLng !== undefined ? { locationLng } : {}),
+          ...(locationMapUrl ? { locationMapUrl } : {}),
           couponCode: appliedCoupon?.code,
           notes: notes.trim(),
           currency,
@@ -276,6 +285,9 @@ export function CartCheckoutDrawer({
           customerPhone: customerPhone.trim(),
           deliveryZone,
           shippingAddress: shippingAddress.trim(),
+          locationLat,
+          locationLng,
+          locationMapUrl,
           couponCode: appliedCoupon?.code,
           notes: notes.trim(),
           currency,
@@ -309,6 +321,9 @@ export function CartCheckoutDrawer({
         setStep('payment');
         setAppliedCoupon(null);
         setCouponInput('');
+        setLocationLat(undefined);
+        setLocationLng(undefined);
+        setLocationMapUrl(undefined);
         onClearCart();
         return;
       }
@@ -326,6 +341,9 @@ export function CartCheckoutDrawer({
       setStep('payment');
       setAppliedCoupon(null);
       setCouponInput('');
+      setLocationLat(undefined);
+      setLocationLng(undefined);
+      setLocationMapUrl(undefined);
       onClearCart();
     } catch {
       setError('ការតភ្ជាប់មានបញ្ហា។ សូមព្យាយាមម្តងទៀត។');
@@ -406,6 +424,8 @@ export function CartCheckoutDrawer({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          orderNumber: createdOrder.orderNumber,
+          customerPhone: createdOrder.customerPhone,
           reference: transferRef.trim(),
           ...(slipDataUrl ? { slipDataUrl } : {}),
         }),
@@ -415,6 +435,7 @@ export function CartCheckoutDrawer({
         await submitPaymentProofInFirestore({
           orderId: createdOrder.id,
           orderNumber: createdOrder.orderNumber,
+          customerPhone: createdOrder.customerPhone,
           reference: transferRef.trim(),
           slipUrl: slipDataUrl || undefined,
         });
@@ -767,6 +788,21 @@ export function CartCheckoutDrawer({
                 />
               </div>
 
+              <LocationMapPicker
+                label="ដាក់ទីតាំងលើផែនទី (Map Location - ជាជម្រើស)"
+                lat={locationLat}
+                lng={locationLng}
+                mapUrl={locationMapUrl}
+                onChange={(loc) => {
+                  setLocationLat(loc.lat);
+                  setLocationLng(loc.lng);
+                  setLocationMapUrl(loc.mapUrl);
+                  if (loc.suggestedAddress && shippingAddress.trim().length < 5) {
+                    setShippingAddress(loc.suggestedAddress);
+                  }
+                }}
+              />
+
               <div>
                 <label className="block text-xs font-medium text-[#4A463E] mb-1.5">
                   កំណត់សម្គាល់បន្ថែម (ជាជម្រើស)
@@ -911,6 +947,32 @@ export function CartCheckoutDrawer({
                 <div className="space-y-1 text-[#4A463E]">
                   <p>អតិថិជន៖ {createdOrder.customerName} ({createdOrder.customerPhone})</p>
                   <p>អាសយដ្ឋាន៖ {createdOrder.shippingAddress}</p>
+                  {(createdOrder.locationMapUrl ||
+                    (createdOrder.locationLat != null && createdOrder.locationLng != null)) && (
+                    <p className="flex flex-wrap items-center gap-1.5 print:hidden">
+                      <MapPin className="h-3.5 w-3.5 text-[#B8860B] shrink-0" />
+                      <a
+                        href={
+                          createdOrder.locationMapUrl ||
+                          buildGoogleMapsUrl(
+                            createdOrder.locationLat!,
+                            createdOrder.locationLng!
+                          )
+                        }
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 font-semibold text-[#005B7F] underline"
+                      >
+                        <span>បើកមើលទីតាំងលើ Google Maps</span>
+                        <ExternalLink className="h-3 w-3" />
+                      </a>
+                      {createdOrder.locationLat != null && createdOrder.locationLng != null && (
+                        <span className="font-mono-num text-[11px] text-[#6B6559]">
+                          ({createdOrder.locationLat.toFixed(5)}, {createdOrder.locationLng.toFixed(5)})
+                        </span>
+                      )}
+                    </p>
+                  )}
                   <p>វិធីទូទាត់៖ <b className="text-[#111111]">{getPaymentMethodLabel(createdOrder.paymentMethod)}</b></p>
                 </div>
                 <div className="border-t border-[#E2DDD3] pt-2 space-y-1.5">
@@ -1180,12 +1242,17 @@ export function CartCheckoutDrawer({
                         </p>
                       </div>
 
-                      {/* Upload Payment Slip & Reference Proof (server-backed orders only) */}
+                      {/* Upload Payment Slip & Reference Proof (ordering customer only) */}
                       {!createdOrder.id.startsWith('static_') && (
                         <div className="rounded-xl border border-[#E2DDD3] bg-[#FAF9F6] p-3.5 space-y-2.5">
-                          <p className="text-xs font-semibold text-[#111111]">
-                            បង្ហោះរូបភាពវិក្កយបត្រផ្ទេរប្រាក់ (Payment Slip)
-                          </p>
+                          <div className="space-y-0.5">
+                            <p className="text-xs font-semibold text-[#111111]">
+                              បង្ហោះរូបភាពវិក្កយបត្រផ្ទេរប្រាក់ (Payment Slip)
+                            </p>
+                            <p className="text-[11px] text-[#6B6559]">
+                              មានតែភ្ញៀវដែលជាអ្នកកុម្ម៉ង់ប៉ុណ្ណោះ ទើបអាចផ្ញើ និងបញ្ជាក់បង្កាន់ដៃសម្រាប់ការបញ្ជាទិញនេះបាន។
+                            </p>
+                          </div>
 
                           {(slipDataUrl || createdOrder.paymentSlipUrl) && (
                             <div className="flex items-center gap-3 rounded-lg border border-[#E2DDD3] bg-white p-2">

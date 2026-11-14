@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import {
+  CheckCircle2,
   ChevronRight,
   History,
   Loader2,
   PackageCheck,
   RefreshCw,
   Search,
+  ShieldCheck,
   Trash2,
   X,
 } from 'lucide-react';
@@ -17,7 +19,10 @@ import {
   getPaymentMethodLabel,
   ORDER_STATUS_LABELS,
 } from '../utils/format.ts';
-import { lookupOrderTrackingInFirestore } from '../services/firestoreShop.ts';
+import {
+  confirmOrderReceiptInFirestore,
+  lookupOrderTrackingInFirestore,
+} from '../services/firestoreShop.ts';
 import {
   loadCustomerOrderHistory,
   ORDER_HISTORY_EVENT,
@@ -96,9 +101,18 @@ export function OrderTrackerModal({ open, khrRate, onClose }: OrderTrackerModalP
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  // Customer-only receipt confirmation state
+  const [confirmPhoneInput, setConfirmPhoneInput] = useState('');
+  const [confirmingReceipt, setConfirmingReceipt] = useState(false);
+  const [confirmReceiptError, setConfirmReceiptError] = useState('');
+  const [confirmReceiptSuccess, setConfirmReceiptSuccess] = useState('');
+
   const syncHistoryEntry = useCallback(async (entry: CustomerOrderHistoryEntry) => {
     setSyncingKey(entry.orderNumber);
     setError('');
+    setConfirmPhoneInput('');
+    setConfirmReceiptError('');
+    setConfirmReceiptSuccess('');
     try {
       const result = await fetchLiveOrder(entry.orderNumber, entry.customerPhone);
       if (result.order) {
@@ -187,6 +201,8 @@ export function OrderTrackerModal({ open, khrRate, onClose }: OrderTrackerModalP
     e.preventDefault();
     setError('');
     setActiveOrder(null);
+    setConfirmReceiptError('');
+    setConfirmReceiptSuccess('');
     setLoading(true);
     try {
       const res = await fetchLiveOrder(orderNumber, phone);
@@ -195,11 +211,114 @@ export function OrderTrackerModal({ open, khrRate, onClose }: OrderTrackerModalP
         setHistory(updated);
         setActiveOrder(res.order);
         setSelectedOrderNumber(res.order.orderNumber);
+        setConfirmPhoneInput(phone.trim());
       } else {
         setError(res.error || 'រកមិនឃើញការបញ្ជាទិញទេ');
       }
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleConfirmReceipt = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!activeOrder) return;
+    const enteredPhone = confirmPhoneInput.trim();
+    const enteredDigits = enteredPhone.replace(/\D/g, '');
+    if (!enteredDigits) {
+      setConfirmReceiptError('សូមបញ្ចូលលេខទូរស័ព្ទពេលកុម្ម៉ង់ ដើម្បីបញ្ជាក់ថាអ្នកជាភ្ញៀវអ្នកកុម្ម៉ង់។');
+      return;
+    }
+
+    const expectedDigits = (activeOrder.customerPhone || '').replace(/\D/g, '');
+    if (expectedDigits && enteredDigits !== expectedDigits) {
+      setConfirmReceiptError(
+        'លេខទូរស័ព្ទមិនត្រូវគ្នាទេ — មានតែភ្ញៀវដែលជាអ្នកកុម្ម៉ង់ប៉ុណ្ណោះ ទើបអាចបញ្ជាក់បង្កាន់ដៃបាន។'
+      );
+      return;
+    }
+
+    setConfirmingReceipt(true);
+    setConfirmReceiptError('');
+    setConfirmReceiptSuccess('');
+
+    try {
+      const res = await fetch(apiUrl(`/api/orders/${activeOrder.id}/confirm-receipt`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orderNumber: activeOrder.orderNumber,
+          customerPhone: enteredPhone,
+        }),
+      });
+      const data = await safeReadJson<{ order?: Order; message?: string; error?: string }>(res);
+
+      if (!data) {
+        let confirmedAt = new Date().toISOString();
+        if (!activeOrder.id.startsWith('static_')) {
+          const result = await confirmOrderReceiptInFirestore({
+            orderNumber: activeOrder.orderNumber,
+            customerPhone: enteredPhone,
+          });
+          confirmedAt = result.receiptConfirmedAt;
+        } else {
+          try {
+            const raw = localStorage.getItem('oudom_static_orders');
+            const list = raw ? (JSON.parse(raw) as Order[]) : [];
+            const nextList = list.map((o) =>
+              o.id === activeOrder.id
+                ? {
+                    ...o,
+                    orderStatus: 'completed' as const,
+                    receiptConfirmed: true,
+                    receiptConfirmedAt: confirmedAt,
+                    updatedAt: confirmedAt,
+                  }
+                : o
+            );
+            localStorage.setItem('oudom_static_orders', JSON.stringify(nextList));
+          } catch {
+            // Ignore localStorage error
+          }
+        }
+
+        const updatedOrder: Order = {
+          ...activeOrder,
+          orderStatus: 'completed',
+          receiptConfirmed: true,
+          receiptConfirmedAt: confirmedAt,
+          updatedAt: confirmedAt,
+        };
+        const updatedHistory = saveOrderToCustomerHistory(updatedOrder);
+        setHistory(updatedHistory);
+        setActiveOrder(updatedOrder);
+        setConfirmReceiptSuccess(
+          'បានបញ្ជាក់បង្កាន់ដៃទទួលទំនិញរួចរាល់! សូមអរគុណសម្រាប់ការទិញទំនិញពីហាងយើង។'
+        );
+        return;
+      }
+
+      if (!res.ok) {
+        setConfirmReceiptError(
+          data.error || 'មិនអាចបញ្ជាក់បង្កាន់ដៃបានទេ។ សូមពិនិត្យលេខទូរស័ព្ទម្តងទៀត។'
+        );
+        return;
+      }
+
+      if (data.order) {
+        const updatedHistory = saveOrderToCustomerHistory(data.order);
+        setHistory(updatedHistory);
+        setActiveOrder(data.order);
+      }
+      setConfirmReceiptSuccess(
+        data.message || 'បានបញ្ជាក់បង្កាន់ដៃទទួលទំនិញរួចរាល់!'
+      );
+    } catch (err) {
+      setConfirmReceiptError(
+        err instanceof Error ? err.message : 'មិនអាចបញ្ជាក់បង្កាន់ដៃបានទេ សូមព្យាយាមម្តងទៀត។'
+      );
+    } finally {
+      setConfirmingReceipt(false);
     }
   };
 
@@ -462,6 +581,77 @@ export function OrderTrackerModal({ open, khrRate, onClose }: OrderTrackerModalP
 
               {/* 5-Stage Progress Timeline */}
               <OrderProgressTimeline order={activeOrder} />
+
+              {/* Customer-Only Receipt Confirmation ("បញ្ជាក់បង្កាន់ដៃ") */}
+              {activeOrder.receiptConfirmed || activeOrder.orderStatus === 'completed' ? (
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3.5 text-xs text-emerald-950 flex items-start gap-2.5">
+                  <CheckCircle2 className="h-4 w-4 text-emerald-700 shrink-0 mt-0.5" />
+                  <div className="space-y-0.5">
+                    <p className="font-bold">
+                      ភ្ញៀវអ្នកកុម្ម៉ង់បានបញ្ជាក់បង្កាន់ដៃទទួលទំនិញរួចរាល់
+                    </p>
+                    <p className="text-[11px] text-emerald-800">
+                      កាលបរិច្ឆេទបញ្ជាក់៖{' '}
+                      {formatDateTimeKm(activeOrder.receiptConfirmedAt || activeOrder.updatedAt)}
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                activeOrder.orderStatus !== 'cancelled' &&
+                activeOrder.orderStatus !== 'failed' && (
+                  <form
+                    onSubmit={handleConfirmReceipt}
+                    className="rounded-xl border border-[#E2DDD3] bg-[#FAF9F6] p-3.5 space-y-2.5"
+                  >
+                    <div className="flex items-start gap-2">
+                      <ShieldCheck className="h-4 w-4 text-[#B8860B] shrink-0 mt-0.5" />
+                      <div className="space-y-0.5">
+                        <p className="text-xs font-bold text-[#111111]">
+                          បញ្ជាក់បង្កាន់ដៃ (បានទទួលទំនិញរួចរាល់)
+                        </p>
+                        <p className="text-[11px] text-[#6B6559] leading-relaxed">
+                          សម្រាប់តែភ្ញៀវដែលជាអ្នកកុម្ម៉ង់ប៉ុណ្ណោះ៖ សូមផ្ទៀងផ្ទាត់លេខទូរស័ព្ទពេលកុម្ម៉ង់ ដើម្បីបញ្ជាក់ថាអ្នកបានទទួលទំនិញ។
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col sm:flex-row gap-2">
+                      <input
+                        type="tel"
+                        inputMode="tel"
+                        required
+                        value={confirmPhoneInput}
+                        onChange={(e) => setConfirmPhoneInput(e.target.value)}
+                        placeholder="លេខទូរស័ព្ទពេលកុម្ម៉ង់ (ឧ. 012 345 678)"
+                        className="h-10 flex-1 rounded-xl border border-[#E2DDD3] bg-white px-3 text-xs text-[#111111] focus:border-[#111111] focus:outline-none"
+                      />
+                      <button
+                        type="submit"
+                        disabled={confirmingReceipt}
+                        className="flex h-10 items-center justify-center gap-1.5 rounded-xl bg-emerald-700 px-4 text-xs font-semibold text-white hover:bg-emerald-800 disabled:opacity-50 shrink-0"
+                      >
+                        {confirmingReceipt ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <CheckCircle2 className="h-3.5 w-3.5" />
+                        )}
+                        <span>បញ្ជាក់បង្កាន់ដៃ</span>
+                      </button>
+                    </div>
+
+                    {confirmReceiptError && (
+                      <p className="rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-[11px] text-red-700">
+                        {confirmReceiptError}
+                      </p>
+                    )}
+                    {confirmReceiptSuccess && (
+                      <p className="rounded-lg bg-emerald-50 border border-emerald-200 px-3 py-2 text-[11px] text-emerald-800">
+                        {confirmReceiptSuccess}
+                      </p>
+                    )}
+                  </form>
+                )
+              )}
 
               {/* Order Items & Payment Breakdown */}
               <div className="rounded-xl border border-[#E2DDD3] bg-[#FAF9F6] p-4 space-y-2.5 text-xs">

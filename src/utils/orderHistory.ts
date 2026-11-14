@@ -9,6 +9,8 @@ export interface CustomerOrderHistoryEntry {
   orderStatus: OrderStatus;
   paymentStatus: 'pending' | 'paid' | 'failed';
   paymentSubmittedAt?: string;
+  receiptConfirmed?: boolean;
+  receiptConfirmedAt?: string;
   itemCount: number;
   firstItemName?: string;
   firstItemImage?: string;
@@ -47,6 +49,9 @@ export function saveOrderToCustomerHistory(order: Order): CustomerOrderHistoryEn
     orderStatus: order.orderStatus,
     paymentStatus: order.paymentStatus,
     paymentSubmittedAt: order.paymentSubmittedAt || prevMatch?.paymentSubmittedAt,
+    receiptConfirmed:
+      order.receiptConfirmed ?? prevMatch?.receiptConfirmed ?? order.orderStatus === 'completed',
+    receiptConfirmedAt: order.receiptConfirmedAt || prevMatch?.receiptConfirmedAt,
     itemCount:
       order.items?.reduce((acc, it) => acc + (it.quantity || 1), 0) ||
       prevMatch?.itemCount ||

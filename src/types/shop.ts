@@ -52,6 +52,9 @@ export interface StoreSettings {
   announcementText: string;
   contactPhone: string;
   contactAddress: string;
+  contactLat?: number;
+  contactLng?: number;
+  contactMapUrl?: string;
   telegramContact: string;
   abaAccountName: string;
   abaAccountId: string;
@@ -113,6 +116,9 @@ export interface Order {
   customerName: string;
   customerPhone: string;
   shippingAddress: string;
+  locationLat?: number;
+  locationLng?: number;
+  locationMapUrl?: string;
   deliveryZone: DeliveryZone;
   notes?: string;
   items: OrderItem[];
@@ -137,6 +143,8 @@ export interface Order {
   paymentSlipUrl?: string;
   paymentReference?: string;
   paymentSubmittedAt?: string;
+  receiptConfirmed?: boolean;
+  receiptConfirmedAt?: string;
   telegramNotified: boolean;
   createdAt: string;
   updatedAt: string;

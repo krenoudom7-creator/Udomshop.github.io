@@ -21,16 +21,20 @@ function getNormalizedRoute(): string {
 
 export default function App() {
   const [route, setRoute] = useState<string>(() => getNormalizedRoute());
+  const [quotaExceeded, setQuotaExceeded] = useState(false);
 
   useEffect(() => {
     const onRouteChange = () => {
       setRoute(getNormalizedRoute());
     };
+    const onQuotaExceeded = () => setQuotaExceeded(true);
     window.addEventListener('popstate', onRouteChange);
     window.addEventListener('hashchange', onRouteChange);
+    window.addEventListener('gmp-quota-exceeded', onQuotaExceeded);
     return () => {
       window.removeEventListener('popstate', onRouteChange);
       window.removeEventListener('hashchange', onRouteChange);
+      window.removeEventListener('gmp-quota-exceeded', onQuotaExceeded);
     };
   }, []);
 
@@ -44,9 +48,39 @@ export default function App() {
     }
   };
 
-  if (route.startsWith('/admin')) {
-    return <AdminDashboard onNavigateStore={() => navigate('/')} />;
-  }
-
-  return <Storefront onNavigateAdmin={() => navigate('/admin')} />;
+  return (
+    <>
+      {quotaExceeded && (
+        <div
+          role="alert"
+          className="bg-amber-50 border-b border-amber-200 text-amber-900 px-4 py-2.5 text-sm flex items-center justify-between gap-4 sticky top-0 z-50 print:hidden"
+        >
+          <span>
+            Map functionality is limited because the free Google Maps Platform quota has been exceeded.
+            Wait for the quota to reset or link a Google Cloud Billing account for higher limits.{' '}
+            <a
+              href="https://developers.google.com/maps/ai/ai-studio?utm_campaign=gmp_mcp_codeassist_v1_aistudio#quota_exceeded_errors"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline font-medium"
+            >
+              Learn more
+            </a>
+          </span>
+          <button
+            type="button"
+            onClick={() => setQuotaExceeded(false)}
+            className="text-amber-700 hover:text-amber-950 font-medium px-2 py-0.5 shrink-0"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+      {route.startsWith('/admin') ? (
+        <AdminDashboard onNavigateStore={() => navigate('/')} />
+      ) : (
+        <Storefront onNavigateAdmin={() => navigate('/admin')} />
+      )}
+    </>
+  );
 }
